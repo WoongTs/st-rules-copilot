@@ -1,0 +1,73 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "st-rules-copilot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-10",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": "../frontend/dist",
+    "not_found_handling": "single-page-application",
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/api/*",
+      "/action/*",
+      "/mcp",
+      "/mcp/*",
+      "/oauth/*",
+      "/.well-known/*"
+    ]
+  },
+  "vars": {
+    "SMARTTHINGS_API_BASE": "https://api.smartthings.com/v1",
+    "GPT_ACTIONS_CLIENT_ID": "",
+    "GPT_ACTIONS_REDIRECT_URIS": ""
+  },
+  "kv_namespaces": [
+    {
+      "binding": "APP_KV",
+      "id": "replace-with-your-kv-namespace-id"
+    },
+    {
+      "binding": "OAUTH_KV",
+      "id": "replace-with-your-oauth-kv-namespace-id"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "PUBLIC_RESOURCE_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 30,
+        "period": 60
+      }
+    },
+    {
+      "name": "SIDE_EFFECT_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CONNECTION_GATE",
+        "class_name": "ConnectionGate"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ConnectionGate"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": false
+    }
+  }
+}

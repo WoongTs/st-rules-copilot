@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>개인정보 처리방침 - SmartThings Rules Copilot</title>
+    <style>
+      :root {
+        --bg-app: #ffffff;
+        --bg-secondary: #f8fafc;
+        --border-color: #e2e8f0;
+        --text-primary: #0f172a;
+        --text-secondary: #475569;
+        --text-muted: #64748b;
+        --accent-primary: #2563eb;
+        --accent-hover: #1d4ed8;
+        --danger-bg: #fef2f2;
+        --danger-border: #fca5a5;
+        --danger-text: #b91c1c;
+        --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg-app: #0f172a;
+          --bg-secondary: #1e293b;
+          --border-color: #334155;
+          --text-primary: #f8fafc;
+          --text-secondary: #cbd5e1;
+          --text-muted: #94a3b8;
+          --accent-primary: #3b82f6;
+          --accent-hover: #60a5fa;
+          --danger-bg: #451a03;
+          --danger-border: #78350f;
+          --danger-text: #fdba74;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        background-color: var(--bg-app);
+        color: var(--text-primary);
+        font-family: var(--font-family);
+        line-height: 1.7;
+        margin: 0;
+        padding: 56px 24px 100px;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      main {
+        margin: 0 auto;
+        max-width: 760px;
+      }
+
+      header {
+        border-bottom: 2px solid var(--border-color);
+        margin-bottom: 40px;
+        padding-bottom: 28px;
+      }
+
+      .eyebrow {
+        color: var(--accent-primary);
+        font-size: 0.85rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        margin: 0 0 12px;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        font-size: 2rem;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        margin: 0;
+      }
+
+      .update-date {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+        margin: 12px 0 0;
+      }
+
+      h2 {
+        color: var(--text-primary);
+        font-size: 1.25rem;
+        font-weight: 700;
+        margin: 44px 0 16px;
+        border-bottom: 1px solid var(--border-color);
+        padding-bottom: 8px;
+      }
+
+      h3 {
+        font-size: 1rem;
+        font-weight: 600;
+        margin: 24px 0 12px;
+      }
+
+      p {
+        color: var(--text-secondary);
+        font-size: 0.95rem;
+        margin: 0 0 16px;
+        text-align: justify;
+      }
+
+      ul, ol {
+        color: var(--text-secondary);
+        font-size: 0.95rem;
+        margin: 0 0 20px;
+        padding-left: 24px;
+      }
+
+      li {
+        margin-bottom: 10px;
+      }
+
+      a {
+        color: var(--accent-primary);
+        text-decoration: underline;
+        text-underline-offset: 4px;
+      }
+
+      a:hover {
+        color: var(--accent-hover);
+      }
+
+      /* Official Table Style */
+      .policy-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 24px 0;
+        font-size: 0.9rem;
+      }
+
+      .policy-table th,
+      .policy-table td {
+        border: 1px solid var(--border-color);
+        padding: 12px 16px;
+        text-align: left;
+      }
+
+      .policy-table th {
+        background-color: var(--bg-secondary);
+        color: var(--text-primary);
+        font-weight: 600;
+        width: 35%;
+      }
+
+      .policy-table td {
+        color: var(--text-secondary);
+      }
+
+      /* Language Toggle Button Group */
+      .language-toggle {
+        display: inline-flex;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        margin-bottom: 32px;
+        padding: 2px;
+        background-color: var(--bg-secondary);
+      }
+
+      .language-toggle button {
+        background: transparent;
+        border: none;
+        border-radius: 3px;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 0.8rem;
+        font-weight: 600;
+        padding: 6px 14px;
+        transition: all 0.15s ease;
+      }
+
+      .language-toggle button:hover {
+        color: var(--text-primary);
+      }
+
+      .language-toggle button[aria-pressed="true"] {
+        background-color: var(--bg-app);
+        color: var(--accent-primary);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        border: 1px solid var(--border-color);
+      }
+
+      /* Formal Alert Callout */
+      .policy-callout {
+        background-color: var(--danger-bg);
+        border-left: 4px solid var(--danger-border);
+        color: var(--danger-text);
+        font-size: 0.9rem;
+        margin: 24px 0;
+        padding: 16px 20px;
+        border-radius: 0 4px 4px 0;
+      }
+
+      .policy-callout strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      .highlight {
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <nav class="language-toggle" aria-label="Language Selector">
+        <button type="button" data-language-button="ko" aria-pressed="true">한국어</button>
+        <button type="button" data-language-button="en" aria-pressed="false">English</button>
+      </nav>
+
+      <!-- KOREAN SECTION -->
+      <section data-language-panel="ko">
+        <header>
+          <p class="eyebrow">SmartThings Rules Copilot</p>
+          <h1>개인정보 처리방침</h1>
+          <p class="update-date">시행일자: 2026년 7월 19일</p>
+        </header>
+
+        <p>
+          본 서비스(이하 "SmartThings Rules Copilot")는 사용자의 개인정보와 스마트싱스 계정 데이터를 매우 중요하게 다루며,
+          데이터 보호 및 투명한 관리 원칙을 준수하기 위해 최선을 다하고 있습니다.
+          본 방침은 서비스를 통해 처리되는 데이터 항목, 이용 목적, 보관 기간 및 보안 관리 정책에 대해 상세히 안내합니다.
+        </p>
+
+        <h2>제 1 조 (서비스의 목적 및 역할)</h2>
+        <p>
+          SmartThings Rules Copilot은 사용자의 스마트싱스(SmartThings) 계정 환경(위치, 기기 목록, 기존 자동화 룰) 정보를 중계하여,
+          사용자가 사전에 연결한 AI 환경(Claude MCP, ChatGPT Actions 등)에서 자연어 대화로 정교한 자동화 규칙(Rule JSON)을 설계하고
+          이를 사용자 승인 하에 계정에 안전하게 전송 및 제어할 수 있도록 보조하는 중개형 도구입니다.
+        </p>
+
+        <h2>제 2 조 (처리하는 데이터 및 보관 기간)</h2>
+        <p>서비스는 동작상 반드시 필요한 핵심 데이터에 한해 암호화 처리 및 임시 저장을 수행하며, 보관 기간이 경과하면 즉시 자동으로 파기합니다.</p>
+
+        <table class="policy-table">
+          <thead>
+            <tr>
+              <th>처리 데이터 항목</th>
+              <th>보관 및 파기 정책</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="highlight">SmartThings Personal Access Token (PAT)</td>
+              <td>
+                서버 측 연결별 격리 저장소에서 즉시 AES-GCM 256-bit 방식으로 암호화되어 임시 저장되며,
+                <span class="highlight" style="color: var(--accent-primary);">등록 후 24시간 내에 자동 영구 파기</span>됩니다.
+              </td>
+            </tr>
+            <tr>
+              <td class="highlight">AI 연동 유지용 OAuth 토큰 및 세션 정보</td>
+              <td>
+                Claude 또는 ChatGPT가 사용하는 OAuth access token은 1시간 동안 유효합니다. 반복 승인을 줄이기 위한 refresh token과 승인 기록은
+                <span class="highlight">최대 30일 동안 보관</span>될 수 있습니다.
+              </td>
+            </tr>
+            <tr>
+              <td class="highlight">브라우저 연결 쿠키</td>
+              <td>
+                <span class="highlight">st_rule_copilot</span> HttpOnly 쿠키는 브라우저와 AI 연결을 같은 임의 연결 식별자에 묶기 위해 사용되며,
+                최대 30일 동안 유지될 수 있습니다. 이 쿠키에는 SmartThings PAT, Claude/GPT OAuth 토큰, Authorization 헤더가 저장되지 않습니다.
+              </td>
+            </tr>
+            <tr>
+              <td class="highlight">스마트싱스 환경 및 기기 메타데이터</td>
+              <td>
+                연동 기기의 이름, ID, 배치된 방 이름, 사용 가능한 기능(Capabilities) 및 기존 Rule 정보는
+                세션 동작 시간 동안에만 처리되며 별도로 서버 영구 저장소에 보관하지 않습니다.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="policy-callout">
+          <strong>⚠️ 사용상의 주요 주의사항</strong>
+          사용자의 SmartThings PAT는 오직 본 웹 서비스 내의 안전한 입력 양식만을 통해 암호화 전송되어야 합니다.
+          절대 <strong>Claude 혹은 ChatGPT와의 채팅 대화창에 직접 붙여넣거나 노출하지 마십시오.</strong>
+        </div>
+
+        <h2>제 3 조 (데이터 보안 및 암호화)</h2>
+        <p>
+          본 서비스는 사용자의 인증 정보 유출을 차단하기 위해 브라우저 로컬 저장소(localStorage) 및 쿠키에 평문 토큰을 일절 저장하지 않습니다.
+          브라우저 쿠키에는 임의 연결 식별자만 저장되며, 모든 주요 연동 토큰은 서버 영역으로 격리되어 관리됩니다. 암호화 키를 포함한 접근 권한은 다중 레이어로 제한됩니다.
+          서비스는 PAT, Authorization 헤더 및 요청 본문과 같은 민감한 원문 정보를 애플리케이션 로그로 기록하지 않습니다.
+        </p>
+
+        <h2>제 4 조 (데이터 삭제 권리 및 연결 방식의 구분)</h2>
+        <p>사용자는 원할 때 언제든지 서비스 화면을 통해 자신의 연동 정보 및 저장 데이터를 완전히 삭제할 수 있습니다.</p>
+        <ol>
+          <li>
+            <span class="highlight">연결 해제 (Disconnect)</span>:
+            서버의 연결별 격리 저장소에 임시 저장된 스마트싱스 토큰(PAT) 정보만 즉시 완전히 파기합니다. AI와의 연동 정보는 보존되므로, 차후 개인 장치에서 토큰만 재입력하여 바로 승인 상태를 재사용할 수 있습니다.
+          </li>
+          <li>
+            <span class="highlight">연결 초기화 (Reset)</span>:
+            서버에 임시 저장된 스마트싱스 PAT 뿐만 아니라, 공유된 AI 승인 정보 및 현재 브라우저의 연결 세션 쿠키까지 완전히 소멸시켜 최초 상태로 되돌립니다.
+            <span class="highlight">공용 PC 또는 공동 기기에서는 반드시 사용을 마친 후 연결 초기화를 실행하십시오.</span>
+          </li>
+        </ol>
+
+        <h2>제 5 조 (대화형 실행 안전 정책)</h2>
+        <p>
+          공식 GPT/Claude 지침은 최종 변경 내용이나 상태 변경 대상을 보여주고 사용자의 명시적 확인을 받은 뒤 write 도구를 호출하도록 요구합니다.
+          서버는 인증, 입력 스키마, 요청 제한, SmartThings 응답과 동일 PAT를 사용한 재조회 결과를 검증하지만,
+          외부 AI 채팅에서 실제 확인이 있었는지는 독립적으로 검증하지 않습니다. 호출 뒤에는 요청, 응답, 재조회 결과를 대화창에 반환합니다.
+        </p>
+
+        <h2>제 6 조 (오픈 베타 테스트 특별 고지 및 문의)</h2>
+        <p>
+          본 서비스는 현재 오픈 베타(Beta) 단계로 제공됩니다.
+          서비스 사용에 따른 보안 이슈, 개인정보 처리에 대한 기타 문의 사항은 본 앱의 배포 채널 또는 프로젝트 관리자를 통해 문의해 주시기 바랍니다.
+        </p>
+      </section>
+
+      <!-- ENGLISH SECTION -->
+      <section data-language-panel="en" hidden>
+        <header>
+          <p class="eyebrow">SmartThings Rules Copilot</p>
+          <h1>Privacy Policy</h1>
+          <p class="update-date">Effective Date: July 19, 2026</p>
+        </header>
+
+        <p>
+          This service ("SmartThings Rules Copilot") highly values the privacy and security of your SmartThings credentials.
+          We are committed to full transparency regarding data handling. This policy outlines the categories of data we process,
+          the limited scope of their retention, and the strict technical security safeguards in place.
+        </p>
+
+        <h2>Section 1 (Scope & Purpose)</h2>
+        <p>
+          SmartThings Rules Copilot serves as an integration helper that relays metadata (Locations, Devices, and Rules) from your
+          SmartThings environment. It enables you to safely draft home automation rules in natural language using authorized AI clients
+          (such as Claude MCP or ChatGPT Actions). Official client instructions require explicit confirmation before a write tool is called.
+        </p>
+
+        <h2>Section 2 (Processed Data & Retention Period)</h2>
+        <p>We process only the minimum amount of data required for integration, applying immediate server encryption and strict automated purge cycles.</p>
+
+        <table class="policy-table">
+          <thead>
+            <tr>
+              <th>Data Categories</th>
+              <th>Retention and Purge Policy</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="highlight">SmartThings Personal Access Token (PAT)</td>
+              <td>
+                Encrypted immediately with AES-GCM 256-bit in an isolated per-connection server store.
+                <span class="highlight" style="color: var(--accent-primary);">Automatically and permanently purged within 24 hours</span>.
+              </td>
+            </tr>
+            <tr>
+              <td class="highlight">AI Integration OAuth Tokens</td>
+              <td>
+                OAuth access tokens used by Claude or ChatGPT are valid for one hour. Refresh tokens and authorization records may be retained for
+                <span class="highlight">up to 30 days</span> to prevent repetitive approvals on your private devices.
+              </td>
+            </tr>
+            <tr>
+              <td class="highlight">Browser Connection Cookie</td>
+              <td>
+                The <span class="highlight">st_rule_copilot</span> HttpOnly cookie keeps the browser and AI connection tied to the same random connection identifier
+                for up to 30 days. It does not store SmartThings PATs, Claude/GPT OAuth tokens, or Authorization headers.
+              </td>
+            </tr>
+            <tr>
+              <td class="highlight">SmartThings Environment Metadata</td>
+              <td>
+                Device names, room configurations, capabilities, and existing automation rules are parsed temporarily
+                during active sessions and are never saved to permanent server storage.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="policy-callout">
+          <strong>⚠️ Crucial Security Reminder</strong>
+          Your SmartThings PAT must only be entered in our secure web app interface.
+          Never <strong>share or paste your raw SmartThings PAT directly into the chat windows of ChatGPT or Claude.</strong>
+        </div>
+
+        <h2>Section 3 (Data Security & Encryption)</h2>
+        <p>
+          To prevent unauthorized credential leakage, raw tokens are never saved on the browser’s local storage or cookies.
+          Browser cookies store only a random connection identifier, while token handling is isolated to our secure backend environment.
+          The service does not record raw sensitive data such as PATs, authorization headers, or request payloads in application logs.
+        </p>
+
+        <h2>Section 4 (User Rights & Data Deletion Levels)</h2>
+        <p>You can revoke access and delete all stored tokens and sessions at any time using the UI console:</p>
+        <ol>
+          <li>
+            <span class="highlight">Disconnect SmartThings</span>:
+            Wipes the encrypted SmartThings PAT from its isolated per-connection server store. Retains OAuth authorization and browser session data, allowing for quick reconnects later on trusted personal devices.
+          </li>
+          <li>
+            <span class="highlight">Reset Connection</span>:
+            Purges the server-side PAT, terminates the OAuth links with the AI platforms, and clears browser session cookies.
+            <span class="highlight">If you are using this app on a public or shared computer, you must perform a Reset Connection upon completion.</span>
+          </li>
+        </ol>
+
+        <h2>Section 5 (Execution Consent Policy)</h2>
+        <p>
+          Official GPT and Claude instructions require the client to show the final proposed rule structure (JSON) or status change target and obtain your explicit confirmation before calling a write tool.
+          The server validates authentication, input schemas, rate limits, SmartThings responses, and same-PAT readbacks, but it cannot independently verify that confirmation occurred in an external AI chat.
+          After a call, the request, API response, and subsequent verification readback are reported back into the chat.
+        </p>
+
+        <h2>Section 6 (Open Beta Inquiries)</h2>
+        <p>
+          This service is currently provided as an open beta.
+          For questions, feedback, or data deletion inquiries, please reach out through the app distribution channel or to the project administrator.
+        </p>
+      </section>
+    </main>
+
+    <script>
+      const buttons = document.querySelectorAll("[data-language-button]");
+      const panels = document.querySelectorAll("[data-language-panel]");
+
+      function setLanguage(language) {
+        document.documentElement.lang = language;
+        buttons.forEach((button) => {
+          button.setAttribute(
+            "aria-pressed",
+            String(button.dataset.languageButton === language)
+          );
+        });
+        panels.forEach((panel) => {
+          panel.hidden = panel.dataset.languagePanel !== language;
+        });
+      }
+
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => {
+          setLanguage(button.dataset.languageButton || "ko");
+        });
+      });
+    </script>
+  </body>
+</html>
