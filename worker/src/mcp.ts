@@ -90,7 +90,8 @@ function createServer(
     name: "smartthings-rules-copilot",
     version: "0.1.0"
   }, {
-    instructions: mcpServerInstructions
+    instructions: mcpServerInstructions,
+    maxToolInputElements: 10000
   });
 
   server.registerTool(
