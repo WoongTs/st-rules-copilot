@@ -1214,3 +1214,14 @@ select:focus {
 .app-footer-link:hover {
   color: var(--accent-primary);
 }
+
+.reconnect-warning {
+  padding: 1rem;
+  border-inline-start: 4px solid #e79838;
+  border-radius: 6px;
+  background: rgba(230, 147, 48, 0.16);
+  line-height: 1.55;
+}
+.reconnect-warning p {
+  margin: 0.5rem 0 0;
+}

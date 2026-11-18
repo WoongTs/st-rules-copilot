@@ -405,11 +405,9 @@ export default function App() {
             title={isReconnectMode ? "AI 연결 복구" : "SmartThings PAT 연결"}
             icon={<PlugZap size={16} />}
           >
-            <p className="muted">
-              {isReconnectMode
-                ? "다른 브라우저나 기기에서 열었더라도, 입력한 PAT는 현재 대화 중인 AI(GPT/Claude)에 즉시 연결됩니다."
-                : "스마트싱스 환경을 읽어오기 위해 Locations, Devices, Rules 권한을 부여한 PAT가 필요합니다."}
-            </p>
+            {!isReconnectMode && (
+              <p className="muted">스마트싱스 환경을 읽어오기 위해 Locations, Devices, Rules 권한을 부여한 PAT가 필요합니다.</p>
+            )}
             <div style={{ marginTop: "12px", marginBottom: "8px" }}>
               <a className="text-link" href={SMARTTHINGS_PAT_URL} target="_blank" rel="noreferrer">
                 <ExternalLink size={16} />
@@ -417,6 +415,13 @@ export default function App() {
               </a>
             </div>
             <form className="connect-form" onSubmit={connect}>
+              {isReconnectMode && (
+                <aside className="reconnect-warning">
+                  <strong>내 GPT·Claude에서 직접 받은 복구 링크인가요?</strong>
+                  <p>입력한 PAT는 이 링크를 발급한 AI 연결에 등록됩니다. 다른 사람이 보낸 링크에 입력하면 그 사람이 내 기기 목록을 보거나 자동화 규칙을 변경할 수 있습니다.</p>
+                  <p>다른 사람이 보낸 링크라면 이 페이지를 닫고 내 GPT·Claude에서 새 복구 링크를 요청하세요.</p>
+                </aside>
+              )}
               <InputField
                 id="pat"
                 label="PAT (Personal Access Token)"
