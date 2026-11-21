@@ -16,6 +16,17 @@ export const toolNames = {
   getRuleReference: "getRuleReference"
 } as const;
 
+// These tools are exposed by MCP only; the existing GPT Actions contract stays
+// independent of client-specific connection management.
+export const mcpOnlyToolNames = {
+  getReconnectLink: "getReconnectLink"
+} as const;
+
+export const mcpOnlyToolDescriptions = {
+  getReconnectLink:
+    "Returns a short-lived PAT replacement link for this authenticated AI connection without calling SmartThings. Use when the user requests a connection link or needs a fresh one. Never ask for a PAT in chat. Does not repair the client's OAuth authorization."
+} as const;
+
 export type ToolNameKey = keyof typeof toolNames;
 
 interface ToolInstruction {
@@ -156,6 +167,12 @@ export function renderAssistantInstructions(
       "Read structuredContent and guidance as internal flow hints; do not quote guidance verbatim.",
       "After a write, report executionStatus, request, response, and readback. Call it successful only when readback.confirmed is true.",
       "Never ask the user to paste a PAT, OAuth token, Authorization header, or another secret into chat. Follow reconnect guidance.",
+      "When a response provides reconnectUrl, show that exact link and pause the affected work until the user reconnects. Do not substitute a generic connection page or repeatedly retry failing tools.",
+      "After a write or readback authentication failure, preserve the execution evidence. After reconnection, read the current Rule before deciding a further change; never automatically replay the write.",
+      ...(surface === "mcp" ? [
+        `When the user explicitly requests a PAT replacement link, call ${mcpOnlyToolNames.getReconnectLink}; it works without validating the current SmartThings PAT.`,
+        "If the MCP client cannot authenticate to this server, use the client's connection flow. A PAT replacement link does not repair MCP OAuth authorization."
+      ] : []),
       "For unlock, disarm, gas or oven, heater, or another high-impact automation, explain the effect and ask for one additional confirmation."
     ].join("\n")
   ].join("\n\n");

@@ -24,7 +24,8 @@ import {
   maybeConnection,
   publicBaseUrl,
   readJson,
-  requireExistingConnection
+  requireExistingConnection,
+  withRuleWriteRecovery
 } from "./http-utils";
 import {
   getRuleReference,
@@ -185,11 +186,17 @@ actionApp.post("/rules/update", async (c) => {
 
   const connectionId = await requireExistingConnection(c.req.raw, c.env);
   const service = new SmartThingsService(c.env);
-  const result = await service.updateRuleChatConfirmed(connectionId, body.data);
+  const result = await withRuleWriteRecovery(
+    await service.updateRuleChatConfirmed(connectionId, body.data),
+    c.req.raw,
+    c.env,
+    connectionId
+  );
   const parts = updateRuleExecutionResultParts(result.executionStatus);
-  const response = toolResult(parts.text, {
-    ...result
-  });
+  const response = toolResult(
+    [parts.text, result.messageForUser].filter(Boolean).join("\n\n"),
+    { ...result }
+  );
   return c.json(result.ok ? response : { ...response, isError: true });
 });
 
@@ -205,11 +212,17 @@ actionApp.post("/rules/delete", async (c) => {
 
   const connectionId = await requireExistingConnection(c.req.raw, c.env);
   const service = new SmartThingsService(c.env);
-  const result = await service.deleteRuleChatConfirmed(connectionId, body.data);
+  const result = await withRuleWriteRecovery(
+    await service.deleteRuleChatConfirmed(connectionId, body.data),
+    c.req.raw,
+    c.env,
+    connectionId
+  );
   const parts = deleteRuleExecutionResultParts(result.executionStatus);
-  const response = toolResult(parts.text, {
-    ...result
-  });
+  const response = toolResult(
+    [parts.text, result.messageForUser].filter(Boolean).join("\n\n"),
+    { ...result }
+  );
   return c.json(result.ok ? response : { ...response, isError: true });
 });
 
@@ -225,11 +238,17 @@ actionApp.post("/rules/set-status", async (c) => {
 
   const connectionId = await requireExistingConnection(c.req.raw, c.env);
   const service = new SmartThingsService(c.env);
-  const result = await service.setRuleStatusChatConfirmed(connectionId, body.data);
+  const result = await withRuleWriteRecovery(
+    await service.setRuleStatusChatConfirmed(connectionId, body.data),
+    c.req.raw,
+    c.env,
+    connectionId
+  );
   const parts = setRuleStatusExecutionResultParts(result.executionStatus);
-  const response = toolResult(parts.text, {
-    ...result
-  });
+  const response = toolResult(
+    [parts.text, result.messageForUser].filter(Boolean).join("\n\n"),
+    { ...result }
+  );
   return c.json(result.ok ? response : { ...response, isError: true });
 });
 
@@ -267,11 +286,17 @@ actionApp.post("/rules/create", async (c) => {
 
   const connectionId = await requireExistingConnection(c.req.raw, c.env);
   const service = new SmartThingsService(c.env);
-  const result = await service.createRuleChatConfirmed(connectionId, body.data);
+  const result = await withRuleWriteRecovery(
+    await service.createRuleChatConfirmed(connectionId, body.data),
+    c.req.raw,
+    c.env,
+    connectionId
+  );
   const parts = createRuleExecutionResultParts(result.executionStatus);
-  const response = toolResult(parts.text, {
-    ...result
-  });
+  const response = toolResult(
+    [parts.text, result.messageForUser].filter(Boolean).join("\n\n"),
+    { ...result }
+  );
   return c.json(result.ok ? response : { ...response, isError: true });
 });
 

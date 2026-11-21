@@ -19,6 +19,7 @@ const PUBLIC_RESOURCE_PATHS = new Set([
   "/api/smartthings/connect",
   "/oauth/register",
   "/oauth/token",
+  "/oauth/continue",
   "/oauth/authorize/approve"
 ]);
 
@@ -26,6 +27,7 @@ const IP_FALLBACK_LIMIT_PATHS = new Set([
   "/api/session/reset",
   "/api/smartthings/connect",
   "/oauth/token",
+  "/oauth/continue",
   "/oauth/authorize/approve"
 ]);
 

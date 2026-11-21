@@ -91,7 +91,7 @@ function inactiveConnectionError(): AppError {
 
 function invalidReconnectTicketError(): AppError {
   return new AppError(
-    "INVALID_REQUEST",
+    "RECONNECT_LINK_INVALID",
     400,
     "AI 연결 복구 링크가 만료되었거나 이미 사용되었습니다. GPT/Claude 대화에서 다시 연결 링크를 받아주세요."
   );

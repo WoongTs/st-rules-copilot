@@ -79,7 +79,7 @@ function validPayload(value: ReconnectTicketPayload): boolean {
 
 function invalidReconnectTicketError(): AppError {
   return new AppError(
-    "INVALID_REQUEST",
+    "RECONNECT_LINK_INVALID",
     400,
     "AI 연결 복구 링크가 만료되었거나 올바르지 않습니다. GPT/Claude 대화에서 다시 연결 링크를 받아주세요."
   );

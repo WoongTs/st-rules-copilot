@@ -23,9 +23,11 @@ import Notice from "./components/Notice";
 import Card from "./components/Card";
 import MetricCard from "./components/MetricCard";
 import AiLaunchSection from "./components/AiLaunchSection";
+import ConnectionRecoveryHelp from "./components/ConnectionRecoveryHelp";
 import LocationSelector from "./components/LocationSelector";
 import Tooltip from "./components/Tooltip";
 import {
+  ApiError,
   connectSession,
   createSession,
   disconnectSession,
@@ -36,7 +38,18 @@ import {
   messageFromError,
   resetSession
 } from "./api/client";
+import {
+  captureConnectionFlow,
+  emptyConnectionFlow,
+  expireConnectionFlow,
+  isTerminalRecoveryError,
+  persistConnectionFlow,
+  recoveryFlowFromUrl,
+  stripFlowTokensFromHash,
+  type ConnectionFlow
+} from "./connection-flow";
 import type {
+  ConnectionBootstrapBody,
   DeviceSummary,
   LoadState,
   LocationSummary,
@@ -49,21 +62,13 @@ type Theme = "auto" | "light" | "dark";
 const SMARTTHINGS_PAT_URL = "https://account.smartthings.com/tokens";
 
 export default function App() {
-  const reconnectTicket = useMemo(() => {
-    const hash = window.location.hash.startsWith("#")
-      ? window.location.hash.slice(1)
-      : window.location.hash;
-    const ticket = new URLSearchParams(hash).get("reconnect")?.trim() ?? "";
-    if (ticket) {
-      window.history.replaceState(
-        window.history.state,
-        "",
-        `${window.location.pathname}${window.location.search}`
-      );
-    }
-    return ticket;
-  }, []);
-  const isReconnectMode = reconnectTicket.length > 0;
+  const [connectionFlow, setConnectionFlow] = useState(loadInitialConnectionFlow);
+  const isReconnectMode = connectionFlow.recovery.phase === "active";
+  const isRecoveryContext = connectionFlow.recovery.phase !== "none";
+  const recoveryCompleted = connectionFlow.recovery.phase === "completed";
+  const isOAuthContinuation = connectionFlow.oauth.phase === "active";
+  const isFlowBlocked = connectionFlow.recovery.phase === "blocked" || connectionFlow.oauth.phase === "expired";
+  const hasConnectionFlow = isRecoveryContext || connectionFlow.oauth.phase !== "none";
   const [status, setStatus] = useState<StatusBody | null>(null);
   const [locations, setLocations] = useState<LocationSummary[]>([]);
   const [devices, setDevices] = useState<DeviceSummary[]>([]);
@@ -73,6 +78,8 @@ export default function App() {
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [connectState, setConnectState] = useState<LoadState>("idle");
   const [message, setMessage] = useState("");
+  const [detailsMessage, setDetailsMessage] = useState("");
+  const [recoveryUrl, setRecoveryUrl] = useState<string | null>(null);
   const [showConfirmReset, setShowConfirmReset] = useState(false);
   const [showConfirmDisconnect, setShowConfirmDisconnect] = useState(false);
   const [theme, setTheme] = useState<Theme>(() => {
@@ -80,6 +87,7 @@ export default function App() {
   });
   const locationRequestId = useRef(0);
   const loadedLocationIdRef = useRef("");
+  const initializedRef = useRef(false);
 
   const [isDevicesOpen, setIsDevicesOpen] = useState(false);
   const [isRulesOpen, setIsRulesOpen] = useState(false);
@@ -99,8 +107,48 @@ export default function App() {
   }, [devices]);
 
   useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
     void initialize();
   }, []);
+
+  useEffect(() => {
+    const enterFragmentFlow = () => {
+      const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      if (!params.has("reconnect") && !params.has("oauth_continue")) return;
+      const flow = loadInitialConnectionFlow();
+      setConnectionFlow(flow);
+      setPat("");
+      setMessage("");
+      setDetailsMessage("");
+      setRecoveryUrl(null);
+      setConnectState("idle");
+      void initialize(flow);
+    };
+    window.addEventListener("hashchange", enterFragmentFlow);
+    return () => window.removeEventListener("hashchange", enterFragmentFlow);
+  }, []);
+
+  useEffect(() => {
+    saveConnectionFlow(connectionFlow);
+    const deadlines = [
+      connectionFlow.recovery.phase === "active" ? connectionFlow.recovery.expiresAt : null,
+      connectionFlow.oauth.phase === "active" ? connectionFlow.oauth.expiresAt : null
+    ].filter((deadline): deadline is number => deadline !== null);
+    if (deadlines.length === 0) return;
+    const expiresAt = Math.min(...deadlines);
+
+    const expire = () => {
+      setConnectionFlow((current) => expireConnectionFlow(current));
+      if (expiresAt <= Date.now()) setPat("");
+    };
+    const timer = window.setTimeout(expire, Math.max(0, expiresAt - Date.now()));
+    window.addEventListener("focus", expire);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", expire);
+    };
+  }, [connectionFlow]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -112,20 +160,26 @@ export default function App() {
     localStorage.setItem("theme", theme);
   }, [theme]);
 
-  async function initialize() {
+  async function initialize(flow = connectionFlow) {
+    // The ticket identifies the original AI connection. Do not create or inspect
+    // an unrelated browser connection before the recovery form is submitted.
+    if (flow.recovery.phase !== "none" || flow.oauth.phase === "expired") {
+      setLoadState("ready");
+      return;
+    }
     setLoadState("loading");
     try {
       await createSession();
       const nextStatus = await getSessionStatus();
       setStatus(nextStatus);
-      if (nextStatus.connected && !isReconnectMode) {
+      if (nextStatus.connected && flow.oauth.phase !== "active") {
         const applied = await loadDetails();
         if (!applied) return;
       }
       setLoadState("ready");
     } catch (error) {
       setLoadState("error");
-      setMessage(messageFromError(error));
+      setMessage(handleReadError(error));
     }
   }
 
@@ -179,6 +233,7 @@ export default function App() {
 
   async function refresh() {
     setMessage("");
+    setDetailsMessage("");
     setLoadState("loading");
     try {
       const nextStatus = await getSessionStatus();
@@ -196,44 +251,141 @@ export default function App() {
       setLoadState("ready");
     } catch (error) {
       setLoadState("error");
-      setMessage(messageFromError(error));
+      setMessage(handleReadError(error));
     }
   }
 
   async function connect(event: FormEvent) {
     event.preventDefault();
-    setMessage("");
-    setConnectState("loading");
-    try {
-      const body = await connectSession(
-        pat,
-        isReconnectMode ? reconnectTicket : undefined
-      );
-      const nextLocationId = body.locations?.[0]?.locationId ?? "";
-      const requestId = ++locationRequestId.current;
-      const details = await readLocationDetails(nextLocationId);
-      if (requestId !== locationRequestId.current) return;
-
+    const currentFlow = expireConnectionFlow(connectionFlow);
+    if (currentFlow !== connectionFlow) {
+      updateConnectionFlow(currentFlow);
       setPat("");
-      setStatus(body);
-      setLocations(body.locations ?? []);
-      setSelectedLocationId(nextLocationId);
-      applyLocationDetails(nextLocationId, details);
-      setConnectState("ready");
-      setMessage(
-        isReconnectMode
-          ? "AI 연결에 새 PAT를 저장했습니다. GPT/Claude 대화로 돌아가 다시 시도하세요."
-          : "연결되었습니다."
-      );
+      return;
+    }
+    if (isFlowBlocked || recoveryCompleted || connectState === "loading") return;
+    const ticket = currentFlow.recovery.phase === "active" ? currentFlow.recovery.ticket : undefined;
+    setMessage("");
+    setDetailsMessage("");
+    setRecoveryUrl(null);
+    setConnectState("loading");
+    let body: ConnectionBootstrapBody;
+    try {
+      body = await connectSession(pat, ticket);
     } catch (error) {
       setPat("");
       setConnectState("error");
       setMessage(messageFromError(error));
+      if (ticket && error instanceof ApiError && isTerminalRecoveryError(error.code)) {
+        updateConnectionFlow({ ...currentFlow, recovery: { phase: "blocked", reason: "invalid" } });
+      }
+      // A rejected new PAT must stay on this ticket's form, even if an error
+      // response contains a reconnectUrl for some other browser connection.
+      return;
     }
+
+    // Saving the PAT is complete at this point. Optional dashboard reads below
+    // must not turn that success into a retry of a consumed recovery ticket.
+    const nextLocationId = body.locations?.[0]?.locationId ?? "";
+    setPat("");
+    setStatus(body);
+    setLocations(body.locations ?? []);
+    setSelectedLocationId(nextLocationId);
+    setDevices([]);
+    setRules([]);
+    setConnectState("ready");
+    setLoadState("ready");
+    setMessage(ticket ? "이 연결의 SmartThings 인증을 갱신했습니다." : "SmartThings 인증을 확인했습니다.");
+
+    if (ticket) {
+      updateConnectionFlow({
+        ...currentFlow,
+        recovery: currentFlow.oauth.phase === "active" ? { phase: "none" } : { phase: "completed" }
+      });
+      clearFlowFragment();
+      return;
+    }
+    if (currentFlow.oauth.phase === "active") return;
+
+    const requestId = ++locationRequestId.current;
+    setLoadState("loading");
+    try {
+      const details = await readLocationDetails(nextLocationId);
+      if (requestId !== locationRequestId.current) return;
+      applyLocationDetails(nextLocationId, details);
+    } catch (error) {
+      if (requestId !== locationRequestId.current) return;
+      setDetailsMessage(`PAT는 저장했지만 상태 요약을 불러오지 못했습니다. ${handleReadError(error)} 새로고침으로 다시 확인할 수 있습니다.`);
+    } finally {
+      if (requestId === locationRequestId.current) setLoadState("ready");
+    }
+  }
+
+  function updateConnectionFlow(flow: ConnectionFlow) {
+    saveConnectionFlow(flow);
+    setConnectionFlow(flow);
+  }
+
+  function handleReadError(error: unknown): string {
+    if (error instanceof ApiError && (error.code === "SMARTTHINGS_AUTH_FAILED" || error.code === "SMARTTHINGS_PAT_EXPIRED")) {
+      setStatus({ ok: true, connected: false });
+      setLocations([]);
+      setDevices([]);
+      setRules([]);
+      setSelectedLocationId("");
+      loadedLocationIdRef.current = "";
+      const validLink = recoveryFlowFromUrl(error.reconnectUrl, window.location.origin);
+      setRecoveryUrl(validLink ? error.reconnectUrl! : null);
+      // The full typed error retains its URL. Render a separate action instead
+      // of putting the bearer recovery ticket into a long text notice.
+      return error.reconnectUrl
+        ? error.message.replace(error.reconnectUrl, "").replace(/아래 링크에서 PAT를 다시 연결하세요:\s*$/, "").trim()
+        : error.message;
+    }
+    return messageFromError(error);
+  }
+
+  function openRecoveryOffer() {
+    const recoveredFlow = recoveryFlowFromUrl(recoveryUrl ?? undefined, window.location.origin);
+    if (!recoveredFlow) return;
+    const nextFlow = { ...recoveredFlow, oauth: expireConnectionFlow(connectionFlow).oauth };
+    const persisted = saveConnectionFlow(nextFlow);
+    setConnectionFlow(nextFlow);
+    setRecoveryUrl(null);
+    setPat("");
+    setMessage("");
+    setDetailsMessage("");
+    setConnectState("idle");
+    setLoadState("ready");
+    if (persisted) {
+      clearFlowFragment();
+    } else if (recoveredFlow.recovery.phase === "active") {
+      // Preserve the bound ticket if storage is blocked; a reload must never
+      // turn this recovery offer into an unbound generic PAT submission.
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${window.location.pathname}${window.location.search}#${new URLSearchParams({ reconnect: recoveredFlow.recovery.ticket })}`
+      );
+    }
+  }
+
+  async function leaveConnectionFlow() {
+    const flow = emptyConnectionFlow();
+    updateConnectionFlow(flow);
+    clearFlowFragment();
+    setPat("");
+    setMessage("");
+    setDetailsMessage("");
+    setRecoveryUrl(null);
+    setConnectState("idle");
+    await initialize(flow);
   }
 
   async function disconnect() {
     setMessage("");
+    setDetailsMessage("");
+    setRecoveryUrl(null);
     setLoadState("loading");
     locationRequestId.current += 1;
     loadedLocationIdRef.current = "";
@@ -254,6 +406,8 @@ export default function App() {
 
   async function startNewConnection() {
     setMessage("");
+    setDetailsMessage("");
+    setRecoveryUrl(null);
     setLoadState("loading");
     locationRequestId.current += 1;
     loadedLocationIdRef.current = "";
@@ -294,12 +448,12 @@ export default function App() {
 
       setSelectedLocationId(previousLoadedLocationId);
       setLoadState("error");
-      setMessage(messageFromError(error));
+      setMessage(handleReadError(error));
     }
   }
 
   const connected = status?.connected ?? false;
-  const showConnectedDashboard = connected && !isReconnectMode;
+  const showConnectedDashboard = connected && !hasConnectionFlow;
   const isError = connectState === "error" || loadState === "error";
 
   return (
@@ -346,6 +500,7 @@ export default function App() {
             variant="icon"
             icon={<RefreshCw size={18} />}
             loading={loadState === "loading" && showConnectedDashboard}
+            disabled={hasConnectionFlow || connectState === "loading"}
             onClick={refresh}
           >
             새로고침
@@ -354,18 +509,24 @@ export default function App() {
       </header>
 
       <section className="status-panel">
-        <div className={showConnectedDashboard ? "status-dot connected" : "status-dot"} />
+        <div className={connected || recoveryCompleted ? "status-dot connected" : "status-dot"} />
         <div>
           <p className="status-title">
-            {isReconnectMode
+            {recoveryCompleted
+              ? "SmartThings 인증 갱신됨"
+              : isRecoveryContext
               ? "AI 연결 복구"
+              : connectionFlow.oauth.phase !== "none"
+                ? "AI 연결 승인 준비"
               : connected
                 ? "SmartThings 연결됨"
                 : "SmartThings 미연결"}
           </p>
           <p className="muted status-security-note">
-            {isReconnectMode
-              ? "이 페이지는 기존 AI 대화창과의 연결 상태를 복구하기 위해 SmartThings PAT를 다시 안전하게 연결합니다."
+            {isRecoveryContext
+              ? "복구 링크를 발급한 기존 AI 연결의 SmartThings PAT를 갱신합니다."
+              : connectionFlow.oauth.phase !== "none"
+                ? "SmartThings 인증을 확인한 뒤 원래 AI 연결 승인 화면으로 이어집니다."
               : connected && status?.expiresAt
               ? `PAT 만료 예상: ${formatDate(status.expiresAt)} (인증 토큰은 서버 영역에 AES-GCM 방식으로 암호화되어 임시 보관되며, 24시간 내에 자동 파기됩니다.)`
               : "SmartThings PAT는 브라우저에 절대 기록되지 않으며, 서버 측 보안 영역에 암호화되어 임시 저장된 후 24시간이 지나면 자동으로 영구 파기됩니다."}
@@ -373,10 +534,10 @@ export default function App() {
         </div>
       </section>
 
-      {(connected || isReconnectMode) && (
+      {showConnectedDashboard && (
         <section className="session-boundary-panel">
           <p>
-            브라우저에는 연결을 유지하기 위한 HttpOnly 쿠키만 저장됩니다. SmartThings PAT와 GPT/Claude OAuth 토큰은 브라우저에 저장하지 않습니다.
+            브라우저에는 연결 유지용 HttpOnly 쿠키를 저장합니다. PAT와 OAuth 액세스 토큰은 저장하지 않으며, 복구·승인용 임시 정보는 이 탭에서 최대 10분간 보관합니다.
           </p>
           <div className="session-boundary-actions">
             <Button
@@ -398,9 +559,62 @@ export default function App() {
           type={isError ? "error" : "success"}
         />
       )}
+      {detailsMessage && <Notice message={detailsMessage} type="info" />}
 
       {!showConnectedDashboard ? (
         <>
+          {isFlowBlocked ? (
+            <Card title={isRecoveryContext ? "복구 링크를 다시 받아주세요" : "AI 연결을 다시 시작해 주세요"} icon={<PlugZap size={16} />}>
+              <div className="connection-flow-message" role="status">
+                <p>
+                  {isRecoveryContext
+                    ? "이 복구 링크는 만료되었거나 더 이상 사용할 수 없습니다. 내 ChatGPT·Claude 대화에서 새 복구 링크를 요청하세요."
+                    : "이 AI 승인 요청은 만료되었거나 올바르지 않습니다. ChatGPT·Claude에서 기존 연결의 인증을 다시 시작하세요."}
+                </p>
+                <p className="muted">복구 링크를 받을 수 없다면 일반 연결 화면에서 PAT를 등록한 후, 아래 안내에 따라 AI 연결을 다시 승인할 수 있습니다.</p>
+                <Button variant="secondary" onClick={() => void leaveConnectionFlow()}>일반 연결 화면으로 이동</Button>
+              </div>
+            </Card>
+          ) : recoveryCompleted ? (
+            <Card title="원래 대화에서 계속하세요" icon={<PlugZap size={16} />}>
+              <div className="connection-flow-message" role="status">
+                <p>이 링크를 발급한 AI 연결에 새 PAT를 저장했습니다. 원래 ChatGPT·Claude 대화로 돌아가 연결 확인을 요청하세요.</p>
+                <p className="muted">같은 연결을 사용하는 AI에 적용됩니다. 서로 따로 연결한 ChatGPT·Claude의 인증까지 자동으로 바뀌지는 않습니다.</p>
+                <Button variant="secondary" onClick={() => void leaveConnectionFlow()}>연결 상태 보기</Button>
+              </div>
+            </Card>
+          ) : recoveryUrl && !isRecoveryContext ? (
+            <Card title="기존 연결의 PAT를 갱신하세요" icon={<PlugZap size={16} />}>
+              <div className="connection-flow-message">
+                <p>이 화면에서 사용하던 연결의 SmartThings 인증이 만료되었거나 유효하지 않습니다.</p>
+                <Button onClick={openRecoveryOffer}>기존 연결 복구하기</Button>
+              </div>
+            </Card>
+          ) : isOAuthContinuation && connected ? (
+            <Card title="AI 연결 승인으로 계속하기" icon={<PlugZap size={16} />}>
+              <p className="muted">SmartThings 인증이 준비되었습니다. 다음 화면에서 AI에 허용할 접근을 확인하고 승인하세요.</p>
+              <form
+                className="connect-form"
+                method="post"
+                action="/oauth/continue"
+                onSubmit={(event) => {
+                  const nextFlow = expireConnectionFlow(connectionFlow);
+                  if (nextFlow.oauth.phase !== "active") {
+                    event.preventDefault();
+                    updateConnectionFlow(nextFlow);
+                  } else {
+                    // Clear only persistence: the browser still needs to
+                    // serialize the existing hidden input for this native POST.
+                    saveConnectionFlow(emptyConnectionFlow());
+                    clearFlowFragment();
+                  }
+                }}
+              >
+                <input type="hidden" name="continuation" value={connectionFlow.oauth.phase === "active" ? connectionFlow.oauth.token : ""} />
+                <Button type="submit">AI 연결 계속하기</Button>
+              </form>
+            </Card>
+          ) : (
           <Card
             title={isReconnectMode ? "AI 연결 복구" : "SmartThings PAT 연결"}
             icon={<PlugZap size={16} />}
@@ -408,6 +622,7 @@ export default function App() {
             {!isReconnectMode && (
               <p className="muted">스마트싱스 환경을 읽어오기 위해 Locations, Devices, Rules 권한을 부여한 PAT가 필요합니다.</p>
             )}
+            {isOAuthContinuation && <p className="muted connection-flow-note">PAT를 등록하면 시작한 AI 연결 승인으로 이어갈 수 있습니다.</p>}
             <div style={{ marginTop: "12px", marginBottom: "8px" }}>
               <a className="text-link" href={SMARTTHINGS_PAT_URL} target="_blank" rel="noreferrer">
                 <ExternalLink size={16} />
@@ -417,9 +632,9 @@ export default function App() {
             <form className="connect-form" onSubmit={connect}>
               {isReconnectMode && (
                 <aside className="reconnect-warning">
-                  <strong>내 GPT·Claude에서 직접 받은 복구 링크인가요?</strong>
+                  <strong>내 ChatGPT·Claude에서 직접 받은 복구 링크인가요?</strong>
                   <p>입력한 PAT는 이 링크를 발급한 AI 연결에 등록됩니다. 다른 사람이 보낸 링크에 입력하면 그 사람이 내 기기 목록을 보거나 자동화 규칙을 변경할 수 있습니다.</p>
-                  <p>다른 사람이 보낸 링크라면 이 페이지를 닫고 내 GPT·Claude에서 새 복구 링크를 요청하세요.</p>
+                  <p>다른 사람이 보낸 링크라면 이 페이지를 닫고 내 ChatGPT·Claude에서 새 복구 링크를 요청하세요.</p>
                 </aside>
               )}
               <InputField
@@ -436,15 +651,16 @@ export default function App() {
               />
               <Button
                 type="submit"
-                disabled={!pat.trim() || connectState === "loading"}
+                disabled={!pat.trim() || connectState === "loading" || loadState === "loading"}
                 loading={connectState === "loading"}
                 icon={<PlugZap size={18} />}
               >
-                연결 확인
+                {isReconnectMode ? "이 AI 연결의 PAT 갱신" : "연결 확인"}
               </Button>
             </form>
           </Card>
-          <AiLaunchSection connected={showConnectedDashboard} />
+          )}
+          {!hasConnectionFlow && <AiLaunchSection connected={showConnectedDashboard} />}
         </>
       ) : (
         <>
@@ -556,6 +772,8 @@ export default function App() {
           </Card>
         </>
       )}
+      <ConnectionRecoveryHelp open={isFlowBlocked} />
+
       {showConfirmReset && (
         <div
           className="modal-backdrop"
@@ -677,4 +895,38 @@ function formatDate(value: string): string {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(new Date(value));
+}
+
+function loadInitialConnectionFlow(): ConnectionFlow {
+  const captured = captureConnectionFlow(window.location.hash, flowStorage());
+  if (captured.hash !== window.location.hash) {
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}${captured.hash}`
+    );
+  }
+  return captured.flow;
+}
+
+function saveConnectionFlow(flow: ConnectionFlow): boolean {
+  return persistConnectionFlow(flow, flowStorage());
+}
+
+function clearFlowFragment() {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  if (!params.has("reconnect") && !params.has("oauth_continue")) return;
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${window.location.pathname}${window.location.search}${stripFlowTokensFromHash(window.location.hash)}`
+  );
+}
+
+function flowStorage(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
 }

@@ -1752,11 +1752,12 @@ describe("SmartThings Rules Copilot Worker", () => {
     const response = await app.request("/action/status", {}, env);
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toMatchObject({
+    const body = await response.json() as { code: string; reconnectUrl?: string };
+    expect(body).toMatchObject({
       ok: false,
-      code: "SMARTTHINGS_PAT_EXPIRED",
-      reconnectUrl: "http://localhost/connect"
+      code: "SMARTTHINGS_PAT_EXPIRED"
     });
+    expect(body.reconnectUrl).toBeUndefined();
   });
 
   it("returns a reconnect error from GPT Actions status with a session but no PAT", async () => {
@@ -4975,7 +4976,7 @@ describe("SmartThings Rules Copilot Worker", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({
       ok: false,
-      code: "INVALID_REQUEST"
+      code: "RECONNECT_LINK_INVALID"
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });

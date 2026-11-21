@@ -16,10 +16,16 @@ SmartThings Rules Copilot은 사용자의 SmartThings PAT로 Locations, Devices,
 - 웹앱에서 SmartThings PAT 연결, 해제, 초기화
 - Locations, Devices, Rules 및 Rule 상세 조회
 - Rule reference 검색과 초안 JSON의 location/device/component/capability 참조 점검
-- Claude Remote MCP와 ChatGPT GPT Actions에 같은 13개 도구 제공
+- Remote MCP와 GPT Actions의 공통 13개 도구, MCP 전용 `getReconnectLink` 제공
 - 채팅 확인 기반 Rule 생성, 전체 교체 수정, 삭제, 활성화, 비활성화
 - 실제 SmartThings 요청·응답과 같은 PAT의 재조회 결과 보고
 - GPT/Claude 연결 복구용 일회성 reconnect URL
+
+저장된 PAT가 없거나 SmartThings에서 폐기되어 401이 반환되면 기존 AI 연결에 묶인
+복구 링크를 안내합니다. MCP에서는 `getReconnectLink`로 새 링크를 직접 요청할 수도
+있습니다. 복구 화면은 새로고침해도 대상을 유지하며, 잘못된 새 PAT는 같은 화면에서
+다시 입력합니다. ChatGPT·Claude의 OAuth 인증 자체가 끊긴 경우에는 웹앱의 연결 복구
+도움말에 따라 해당 서비스에서 다시 승인합니다.
 
 ## 안전 경계
 
@@ -74,8 +80,8 @@ npm run check
 npm run dev
 ```
 
-`npm run check`는 Worker/frontend typecheck, Worker Vitest, Worker dry-run build,
-frontend production build를 실행합니다.
+`npm run check`는 Worker/frontend typecheck, Worker Vitest, frontend 연결 흐름 테스트,
+Worker dry-run build, frontend production build를 실행합니다.
 
 ## 자신의 Cloudflare 계정에 배포
 
