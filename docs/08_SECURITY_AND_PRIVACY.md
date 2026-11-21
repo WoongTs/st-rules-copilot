@@ -57,19 +57,32 @@ OAuth token이 유효해도 SmartThings 접근 전에 ConnectionGate active 상�
 reset에서 gate를 먼저 닫기 때문에 Provider KV 폐기 전파가 늦어도 이전 token으로
 SmartThings 자원에 접근할 수 없어야 한다.
 
+PAT 입력을 위해 중단된 승인 요청은 10분짜리 OAuth continuation으로 이어간다.
+원래 client/redirect/PKCE/scope를 검증한 뒤 요청 query를 용도 분리된 AES-GCM key로
+암호화하고, 현재 origin과 브라우저 connection에 묶는다. 웹에는 fragment로 전달하고
+`POST /oauth/continue`의 form body로만 받는다. 재개 시 요청을 다시 검증하고 동의 화면을
+표시한다. continuation 재사용 자체는 grant를 만들지 않으며, 최종 승인은 기존 CSRF
+nonce를 소비해야 한다. 쿠키가 없거나 다른 connection이면 재개를 거부한다.
+
 ## Reconnect ticket
 
-PAT 없음·만료 응답은 확인된 AI connection에 대해 10분짜리 opaque reconnect URL을
-제공할 수 있다.
+PAT 없음·만료와 SmartThings의 인증 거부(401)는 확인된 AI connection에 대해 10분짜리
+opaque reconnect URL을 제공할 수 있다. MCP `getReconnectLink`도 같은 발급 경로를
+사용하며 사용자가 다른 connection ID를 지정하는 입력은 받지 않는다.
 
 - URL에 PAT, OAuth token, Authorization header, raw connection ID를 넣지 않는다.
 - ticket은 `/connect#reconnect=...` fragment에 두어 HTTP 요청·invocation log에 보내지
-  않고, browser가 읽은 즉시 주소창에서 제거한다.
+  않는다. 탭의 sessionStorage에 기한과 함께 보관한 후 주소창에서 제거한다. 저장소가
+  차단되면 fragment를 유지해 새로고침으로 복구 대상이 사라지지 않게 한다.
+- 복구·승인 token만 탭에서 임시 보관하고 PAT를 저장하지 않는다. 임시 token은
+  성공·취소·만료 시 정리한다. 서버의 기한 검증은 브라우저 보관 기한과 별개로 적용한다.
 - 서버는 reconnect ticket을 JSON body에서만 받으며 query fallback은 두지 않는다.
 - payload는 용도 분리된 AES-GCM key로 암호화한다.
 - ConnectionGate에는 nonce와 만료 시각만 저장한다.
 - nonce 소비와 PAT 저장을 한 transaction으로 처리한다.
 - 만료, replay, reset 전 ticket은 SmartThings 호출 전에 거부한다.
+- 새 PAT 검증 실패는 ticket을 소비하거나 브라우저 cookie의 다른 연결로 링크를
+  재발급하지 않는다. 기존 연결을 지정할 수 없으면 일반 URL을 복구 링크로 대체하지 않는다.
 
 ## 연결 해제와 초기화
 

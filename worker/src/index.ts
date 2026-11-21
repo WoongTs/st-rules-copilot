@@ -8,7 +8,7 @@ import {
 import { Hono } from "hono";
 import { z } from "zod";
 import { buildSessionCookie, readConnectionId } from "./cookies";
-import { AppError, toErrorBody } from "./errors";
+import { AppError, isPatRecoveryError, toErrorBody } from "./errors";
 import { randomId } from "./crypto";
 import { actionApp } from "./action";
 import { handleMcpRequest } from "./mcp";
@@ -20,7 +20,7 @@ import {
   searchRuleReferences
 } from "./rule-references";
 import { SmartThingsService } from "./service";
-import { maybeConnection, readJson, reconnectUrlForRequest } from "./http-utils";
+import { maybeConnection, patRecoveryErrorBody, readJson } from "./http-utils";
 import { applyRequestGuards } from "./request-security";
 import type { Env, OAuthAccessProps } from "./types";
 
@@ -229,25 +229,31 @@ app.notFound((c) =>
 );
 
 app.onError(async (error, c) => {
-  let responseError: unknown = error;
-  let reconnectUrl: string | undefined;
-  if (error instanceof AppError && error.code === "SMARTTHINGS_PAT_EXPIRED") {
-    try {
-      reconnectUrl = await reconnectUrlForRequest(c.req.raw, c.env);
-    } catch (reconnectError) {
-      responseError = reconnectError;
-    }
-  }
+  // A submitted PAT is still being validated. A recovery ticket may target a
+  // different connection from the browser cookie, so never issue a replacement
+  // link from that cookie when the submitted PAT is rejected.
+  const canOfferPatRecovery =
+    isPatRecoveryError(error) &&
+    c.req.path !== "/api/smartthings/connect" &&
+    !c.req.path.startsWith("/oauth/");
+  const body = canOfferPatRecovery
+    ? await patRecoveryErrorBody(
+        error,
+        c.req.raw,
+        c.env,
+        await maybeConnection(c.req.raw, c.env)
+      )
+    : toErrorBody(error);
 
-  const status = responseError instanceof AppError ? responseError.status : 500;
+  const status = error instanceof AppError ? error.status : 500;
   const headers = new Headers({
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store"
   });
-  if (responseError instanceof AppError && responseError.code === "RATE_LIMITED") {
-    headers.set("Cache-Control", "no-store");
+  if (error instanceof AppError && error.code === "RATE_LIMITED") {
     headers.set("Retry-After", "60");
   }
-  return new Response(JSON.stringify(toErrorBody(responseError, reconnectUrl)), {
+  return new Response(JSON.stringify(body), {
     status,
     headers
   });

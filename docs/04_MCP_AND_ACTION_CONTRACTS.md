@@ -2,7 +2,8 @@
 
 ## 계약 원칙
 
-- MCP tool 이름과 GPT Actions `operationId`는 동일하다.
+- 공통 13개 작업의 MCP tool 이름과 GPT Actions `operationId`는 동일하다.
+  `getReconnectLink`는 MCP 전용 추가 도구이며 Actions 계약에는 포함하지 않는다.
 - 같은 작업의 공통 입력은 MCP와 Actions에서 같은 의미와 service 결과를 사용한다.
   Actions 전용 `cursor`는 큰 응답을 나누는 전송 제어값이며 service 조회 의미를 바꾸지 않는다.
 - 공통 Zod 입력 schema는 `worker/src/tool-contracts.ts`가 기준이다.
@@ -20,7 +21,27 @@ ConnectionGate의 active 상태와 PAT를 확인한다.
 client별 PKCE 정책은 `02_CLOUDFLARE_ARCHITECTURE.md`, 보안 경계는
 `08_SECURITY_AND_PRIVACY.md`에서 설명한다.
 
-## 도구 목록
+### PAT 복구 오류
+
+저장 PAT가 없거나 만료된 경우는 `SMARTTHINGS_PAT_EXPIRED`, 저장 PAT로 호출한
+SmartThings가 401을 반환한 경우는 `SMARTTHINGS_AUTH_FAILED`를 유지한다. MCP 조회·쓰기
+콜백과 Actions 오류 응답은 원래 오류에 `messageForUser`와, 발급할 수 있으면 현재 AI
+연결에 묶인 `reconnectUrl`을 제공한다. 403이나 429를 PAT 만료로 바꾸지 않는다.
+
+- 복구 URL은 `/connect#reconnect=...`이며 10분짜리 일회성 ticket을 포함한다.
+- 연결이 없거나 reset으로 비활성화되어 링크를 만들 수 없으면
+  `RECONNECT_UNAVAILABLE`을 사용한다. 일반 `/connect` URL을 복구 링크처럼 반환하지 않는다.
+- 이미 실패한 작업에 링크를 덧붙이는 중 발급이 실패하면 원래 오류 code와 실행 증거를
+  유지하고 링크를 제공할 수 없는 이유를 안내한다.
+- 잘못되었거나 만료·소비된 ticket의 제출은 `RECONNECT_LINK_INVALID`로 거부한다.
+- `/api/smartthings/connect`의 새 PAT 검증 401은 입력 중인 ticket을 유지한다. 브라우저
+  cookie가 다른 연결을 가리킬 수 있으므로 그 cookie의 복구 URL로 전환하지 않는다.
+
+AI는 반환된 URL을 그대로 보여주고 PAT를 채팅으로 요청하지 않는다. MCP 서버 호출 전에
+client의 OAuth 인증이 실패하면 client의 연결 절차를 다시 진행해야 한다. PAT 복구 URL은
+그 OAuth 인증을 대신하지 않는다.
+
+## 공통 도구 목록
 
 | 이름 | 역할 | 변경 여부 |
 | --- | --- | --- |
@@ -37,6 +58,15 @@ client별 PKCE 정책은 `02_CLOUDFLARE_ARCHITECTURE.md`, 보안 경계는
 | `updateRuleConfirmed` | Rule 전체 교체 수정 | Write |
 | `deleteRuleConfirmed` | Rule 삭제 | Write |
 | `setRuleStatusConfirmed` | Rule 활성화/비활성화 | Write |
+
+### MCP 전용 복구 도구
+
+`getReconnectLink`는 빈 객체 `{}`를 입력받아 인증된 AI 연결의 PAT 교체 링크를 반환한다.
+SmartThings를 호출하지 않으므로 PAT가 이미 삭제되었거나 거부된 상태에서도 새 링크를
+요청할 수 있다. 성공 결과는 `ok`, `messageForUser`, `reconnectUrl`,
+`expiresInSeconds: 600`을 포함한다. annotation은 `readOnlyHint=true`,
+`destructiveHint=false`, `idempotentHint=false`, `openWorldHint=false`다. 링크 발급은
+기존 connection별 발급 제한을 따른다.
 
 MCP write 도구는 `readOnlyHint=false`, `destructiveHint=true`,
 `idempotentHint=false`, `openWorldHint=true` annotation을 유지한다. annotation은 client
@@ -131,6 +161,13 @@ MCP `structuredContent`와 Actions JSON은 같은 의미를 반환한다.
 - `readback`: 같은 PAT의 한 번의 결과 확인. 수행하지 못했으면 `null`.
 - `error`: 실패 이유와 안정적인 code/message.
 - `guidance`: 사용자가 실제 다음 행동을 해야 하는 예외에만 선택적으로 제공.
+- `messageForUser`, `reconnectUrl`: write 또는 readback의 인증 실패에 대한 선택적 복구 안내.
+
+write 응답이 401이거나 성공 응답 뒤 readback에서 인증에 실패해도 기존 `executionStatus`,
+`before`, `request`, `response`, `readback`, `error`를 보존한다. 삭제 readback의 403 뒤
+보조 목록 조회에서 인증에 실패한 경우는 기존 readback에 `error`를 덧붙인다. 복구 안내가
+있다는 이유로 변경이 실행되지 않았다고 단정하지 않는다. 다시 연결한 뒤 현재 Rule부터
+조회하며 변경 요청을 자동으로 재실행하지 않는다.
 
 정상 write 성공은 `readback.confirmed=true`가 필요하다. MCP `content`에는 짧은 사용자
 요약을, `structuredContent`에는 위 구조와 내부 flow hint를 둔다.

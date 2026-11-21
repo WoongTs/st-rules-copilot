@@ -1,5 +1,5 @@
 import { SmartThingsClient } from "./smartthings";
-import { AppError } from "./errors";
+import { AppError, isPatRecoveryError } from "./errors";
 import { enforceSideEffectRateLimit } from "./request-security";
 import { TokenStore } from "./token-store";
 import {
@@ -71,6 +71,7 @@ export interface SmartThingsWriteReadback {
   confirmed: boolean;
   status: number;
   body: unknown;
+  error?: RuleWriteError;
 }
 
 export interface RuleWriteError {
@@ -337,7 +338,13 @@ export class SmartThingsService {
             }
           }
         };
-      } catch {
+      } catch (error) {
+        if (isPatRecoveryError(error)) {
+          readback = {
+            ...readback,
+            error: { code: error.code, message: error.messageForUser }
+          };
+        }
         // Keep the unconfirmed detail readback when the same-PAT list fallback fails.
       }
     }
@@ -746,7 +753,8 @@ export class SmartThingsService {
   > {
     try {
       return { ok: true, body: await lookup() };
-    } catch {
+    } catch (error) {
+      if (isPatRecoveryError(error)) throw error;
       return {
         ok: false,
         warning: {

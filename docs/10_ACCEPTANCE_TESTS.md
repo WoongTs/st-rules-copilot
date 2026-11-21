@@ -56,9 +56,20 @@ deployment version과 환경별 live 검증 원문은 공개 범위에 포함하
 
 ### Consent
 
-- authorize GET은 동의 화면만 표시한다.
+- authorize GET은 동의 화면을 표시하거나 PAT 설정으로 이동하며 grant를 만들지 않는다.
 - 승인 POST는 현재 connection, OAuth request hash, 10분짜리 nonce를 검증한다.
 - nonce 누락, replay, 다른 request에 대한 재사용을 거부한다.
+
+### PAT 설정 뒤 OAuth 계속하기
+
+- cookie 또는 저장 PAT가 없는 authorize 요청은 원래 state, redirect URI, scope, PKCE를
+  보존한 채 같은 origin의 PAT 설정 화면으로 이동한다.
+- continuation은 10분 동안 현재 browser connection과 origin에 묶인다. 변조·만료,
+  cookie 누락·변경·reset, 다른 origin의 요청을 거부한다.
+- PAT 저장 뒤 continuation POST는 원래 동의 화면으로 돌아간다. PAT 저장과 재개만으로
+  grant를 만들지 않으며, 원래 PKCE 검증과 승인·거절 동작을 유지한다.
+- 저장된 PAT의 존재와 SmartThings의 실제 수락 여부를 구분한다. 서버에 남아 있지만
+  SmartThings에서 거부된 PAT는 후속 API 호출의 401 복구 경로로 처리한다.
 
 ### Token과 reset
 
@@ -72,15 +83,31 @@ deployment version과 환경별 live 검증 원문은 공개 범위에 포함하
 
 - reconnect URL에 PAT, OAuth token, Authorization header, raw connection ID가 없다.
 - reconnect ticket은 query가 아닌 `/connect#reconnect=...` fragment에 있고 browser가
-  읽은 즉시 주소창에서 제거한다.
+  같은 탭의 복구 상태로 보존한 뒤 주소창에서 제거한다. 보존할 수 없으면 fragment를
+  유지하여 새로고침으로 복구 모드가 사라지지 않게 한다.
 - 서버는 JSON body ticket만 사용하고 query ticket은 reconnect로 해석하지 않는다.
 - nonce 소비와 PAT 저장은 원자적이다.
-- 만료, replay, reset 전 ticket은 SmartThings 호출 전에 실패한다.
+- 만료, replay, reset 전 ticket은 SmartThings 호출 전에 `RECONNECT_LINK_INVALID`로
+  실패하며 일반 연결 화면으로 자동 전환하지 않는다.
+- 유효한 ticket은 현재 browser cookie와 달라도 원래 AI 연결의 PAT를 교체한다.
+  새 PAT 검증 401은 ticket을 소비하지 않고 다른 cookie 연결의 복구 URL을 발급하지 않는다.
+- PAT 없음과 SmartThings 401은 각각 원래 오류 code를 유지하면서 해당 연결의 복구 URL을
+  제공한다. 403과 429에는 인증 복구 URL을 덧붙이지 않는다.
+- 연결이 없거나 비활성화되면 `RECONNECT_UNAVAILABLE`이며, 일반 `/connect` URL을
+  기존 연결의 복구 URL로 대체하지 않는다. 실패한 작업의 링크 발급까지 실패하면 원래
+  오류 code와 실행 증거를 유지한다.
+- 새로고침 뒤에도 복구·만료·완료 상태를 구분한다. PAT 저장 성공은 선택적인 기기·규칙
+  조회 실패와 분리하며 소비된 ticket으로 저장을 자동 재시도하지 않는다.
+- OAuth 인증 실패는 MCP 도구 실행 전 401 challenge로 처리한다. PAT 교체 도구로
+  client의 OAuth 승인을 복구할 수 있다고 안내하지 않는다.
 
 ## 3. MCP와 GPT Actions parity
 
-- MCP와 OpenAPI가 같은 13개 tool/operation 이름을 노출한다.
+- MCP와 OpenAPI가 공통 13개 tool/operation 이름을 노출한다. Actions 목록은 그대로이며
+  MCP만 `getReconnectLink`를 추가로 노출한다.
 - 같은 작업의 MCP/OpenAPI description이 `ai-instructions.ts` 원본과 일치한다.
+- `getReconnectLink`는 `{}` 입력과 인증된 연결로 동작하며 SmartThings를 호출하지 않는다.
+  PAT가 없어도 해당 연결에 묶인 10분짜리 링크를 반환하고 일반 `/connect`로 대체하지 않는다.
 - GPT Actions description은 300자 이하이다.
 - MCP initialize 응답에 전체 instructions가 있다.
 - `npm run --silent instructions:gpt`가 완결된 Builder 지침을 출력한다.
@@ -152,6 +179,9 @@ deployment version과 환경별 live 검증 원문은 공개 범위에 포함하
 ## 10. 공통 결과와 보안
 
 - write 결과는 `executionStatus`, `request`, `response`, `readback`을 제공한다.
+- write 또는 readback의 401은 원래 결과·오류·실행 증거에 복구 안내를 덧붙인다.
+  삭제 readback 403 뒤 목록 조회 401도 인증 원인을 보존한다. 성공 응답 뒤 readback
+  실패는 `*_not_confirmed`를 유지하며 복구 후 현재 Rule을 조회하기 전에 쓰기를 재실행하지 않는다.
 - 성공은 `readback.confirmed=true`일 때만 보고한다.
 - 전체 Rules 배열을 write 결과에 넣지 않는다.
 - PAT, Authorization header, client secret 및 OAuth token이 로그·오류 응답·일반 API 응답에
@@ -164,7 +194,7 @@ deployment version과 환경별 live 검증 원문은 공개 범위에 포함하
   actor로 사용한다. malformed encoding, 과도하게 긴 값과 임의 형식은 거부한다.
 - 공개 자원 생성은 행위자별 30회/분, Rule write와 reconnect ticket 발급은 connection별
   합산 10회/분이며 일반 read는 애플리케이션 rate limit 대상이 아니다.
-- session reset, PAT connect, OAuth token과 OAuth 승인 POST는 actor 회전과 관계없이
+- session reset, PAT connect, OAuth token·계속하기·승인 POST는 actor 회전과 관계없이
   IP+route 보조 제한을 적용하고, OAuth token 제한 actor는 browser cookie보다 OAuth client
   ID를 우선한다.
 - 제한 경계까지 성공하고 다음 요청은 `RATE_LIMITED`가 된다. 다른 connection의 counter는
@@ -187,6 +217,10 @@ deployment version과 환경별 live 검증 원문은 공개 범위에 포함하
 npm run check
 npm run --silent instructions:gpt
 ```
+
+복구 회귀 테스트는 MCP의 오류·쓰기 증거, HTTP의 ticket 대상 보존, OAuth continuation의
+16개 시나리오, 프런트엔드의 복구 상태 유지·만료·완료를 검증한다. 이 자동 테스트는 실제
+SmartThings 호출이나 ChatGPT/Claude의 실제 연결 화면 검증을 대신하지 않는다.
 
 live 검증은 SmartThings 상태를 바꿀 수 있으므로 별도 승인 뒤 disposable Rule로
 create → update → status → delete를 수행하고 각 단계의 request/response/readback을

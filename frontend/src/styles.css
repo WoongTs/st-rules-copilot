@@ -1225,3 +1225,66 @@ select:focus {
 .reconnect-warning p {
   margin: 0.5rem 0 0;
 }
+
+.connection-flow-message {
+  display: grid;
+  gap: 16px;
+}
+
+.connection-flow-message p {
+  margin: 0;
+}
+
+.connection-flow-message button {
+  justify-self: start;
+}
+
+.connection-flow-note {
+  margin-top: 8px;
+}
+
+.connection-recovery-help {
+  margin: 20px 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.connection-recovery-help > summary {
+  padding: 16px 20px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.connection-recovery-help > summary:focus-visible {
+  outline: 2px solid var(--border-color-focus);
+  outline-offset: 2px;
+}
+
+.connection-recovery-help-content {
+  padding: 0 20px 20px;
+}
+
+.connection-recovery-clients {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 16px;
+  margin: 16px 0;
+}
+
+.connection-recovery-clients h3 {
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.connection-recovery-clients ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.connection-recovery-clients li + li {
+  margin-top: 8px;
+}

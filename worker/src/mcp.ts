@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { mcpServerInstructions } from "./ai-instructions";
+import { mcpServerInstructions, mcpOnlyToolNames, mcpOnlyToolDescriptions } from "./ai-instructions";
 import {
   capabilityContextResultParts,
   connectedStatusResultParts,
@@ -19,7 +19,8 @@ import {
 import { inspectCapabilityContextInputSchema } from "./capability-context";
 import { AppError } from "./errors";
 import { compactDevicesForAi } from "./device-output";
-import { maybeConnection, reconnectUrlForConnection } from "./http-utils";
+import { maybeConnection, reconnectUrlForConnection, patRecoveryErrorBody, withRuleWriteRecovery } from "./http-utils";
+import { RECONNECT_TICKET_TTL_SECONDS } from "./reconnect-ticket-store";
 import { getRuleReference, searchRuleReferences } from "./rule-references";
 import { SmartThingsService } from "./service";
 import {
@@ -94,6 +95,19 @@ function createServer(
     maxToolInputElements: 10000
   });
 
+  const guarded = <Args extends unknown[]>(
+    callback: (...args: Args) => Promise<McpToolResult>
+  ) => async (...args: Args): Promise<McpToolResult> => {
+    try {
+      return await callback(...args);
+    } catch (error) {
+      if (error instanceof AppError) {
+        return appErrorToolResult(error, request, env, connectionId);
+      }
+      throw error;
+    }
+  };
+
   server.registerTool(
     toolNames.getStatus,
     {
@@ -101,7 +115,7 @@ function createServer(
       inputSchema: {},
       annotations: readOnlyAnnotations
     },
-    async () => {
+    guarded(async () => {
       if (!connectionId) {
         return patExpiredToolResult(request, env, connectionId);
       }
@@ -119,7 +133,30 @@ function createServer(
         ...(parts.guidance ? { guidance: parts.guidance } : {}),
         connected: true
       });
-    }
+    })
+  );
+
+  server.registerTool(
+    mcpOnlyToolNames.getReconnectLink,
+    {
+      description: mcpOnlyToolDescriptions.getReconnectLink,
+      inputSchema: {},
+      annotations: { ...readOnlyAnnotations, idempotentHint: false, openWorldHint: false }
+    },
+    guarded(async () => {
+      const reconnectUrl = await reconnectUrlForConnection(
+        request,
+        env,
+        requireConnection(connectionId)
+      );
+      const messageForUser = "이 AI 연결에 새 PAT를 저장하는 링크입니다. 10분 안에 웹에서 입력한 뒤 대화로 돌아오세요.";
+      return toolResult(`${messageForUser}\n${reconnectUrl}`, {
+        ok: true,
+        messageForUser,
+        reconnectUrl,
+        expiresInSeconds: RECONNECT_TICKET_TTL_SECONDS
+      });
+    })
   );
 
   server.registerTool(
@@ -129,7 +166,7 @@ function createServer(
       inputSchema: {},
       annotations: readOnlyAnnotations
     },
-    async () => {
+    guarded(async () => {
       const service = new SmartThingsService(env);
       const locations = await service.listLocations(requireConnection(connectionId));
       const parts = locationResultParts(locations, mcpToolNames);
@@ -138,7 +175,7 @@ function createServer(
         ...(parts.guidance ? { guidance: parts.guidance } : {}),
         locations
       });
-    }
+    })
   );
 
   server.registerTool(
@@ -150,7 +187,7 @@ function createServer(
       },
       annotations: readOnlyAnnotations
     },
-    async ({ locationId }: { locationId?: string }) => {
+    guarded(async ({ locationId }: { locationId?: string }) => {
       const service = new SmartThingsService(env);
       const devices = await service.listDevices(requireConnection(connectionId), locationId);
       const devicesForAi = compactDevicesForAi(devices);
@@ -160,7 +197,7 @@ function createServer(
         ...(parts.guidance ? { guidance: parts.guidance } : {}),
         devices: devicesForAi
       });
-    }
+    })
   );
 
   server.registerTool(
@@ -170,7 +207,7 @@ function createServer(
       inputSchema: { locationId: locationIdSchema },
       annotations: readOnlyAnnotations
     },
-    async ({ locationId }: { locationId: string }) => {
+    guarded(async ({ locationId }: { locationId: string }) => {
       const service = new SmartThingsService(env);
       const rules = await service.listRules(requireConnection(connectionId), locationId);
       const parts = rulesListResultParts();
@@ -179,7 +216,7 @@ function createServer(
         ...(parts.guidance ? { guidance: parts.guidance } : {}),
         rules
       });
-    }
+    })
   );
 
   server.registerTool(
@@ -203,7 +240,7 @@ function createServer(
       },
       annotations: readOnlyAnnotations
     },
-    async (input: unknown) => {
+    guarded(async (input: unknown) => {
       const parsed = inspectCapabilityContextInputSchema.parse(input);
       const service = new SmartThingsService(env);
       const result = await service.inspectCapabilityContext(
@@ -216,7 +253,7 @@ function createServer(
         contexts: result.contexts,
         ...(parts.guidance ? { guidance: parts.guidance } : {})
       });
-    }
+    })
   );
 
   server.registerTool(
@@ -229,7 +266,7 @@ function createServer(
       },
       annotations: readOnlyAnnotations
     },
-    async ({ locationId, ruleId }: { locationId: string; ruleId: string }) => {
+    guarded(async ({ locationId, ruleId }: { locationId: string; ruleId: string }) => {
       const service = new SmartThingsService(env);
       const rule = await service.getRuleDetail(
         requireConnection(connectionId),
@@ -242,7 +279,7 @@ function createServer(
         ...(parts.guidance ? { guidance: parts.guidance } : {}),
         rule
       });
-    }
+    })
   );
 
   server.registerTool(
@@ -255,7 +292,7 @@ function createServer(
       },
       annotations: readOnlyAnnotations
     },
-    async (input: {
+    guarded(async (input: {
       locationId: string;
       ruleJson: { name: string; actions: Record<string, unknown>[] } & Record<string, unknown>;
     }) => {
@@ -271,7 +308,7 @@ function createServer(
         ...checkData,
         ...(parts.guidance ? { guidance: parts.guidance } : {})
       });
-    }
+    })
   );
 
   server.registerTool(
@@ -284,26 +321,21 @@ function createServer(
       },
       annotations: destructiveAnnotations
     },
-    async (input: z.infer<typeof createRuleConfirmedSchema>) => {
+    guarded(async (input: z.infer<typeof createRuleConfirmedSchema>) => {
       const service = new SmartThingsService(env);
-      try {
-        const result = await service.createRuleChatConfirmed(
-          requireConnection(connectionId),
-          input
-        );
-        const parts = createRuleExecutionResultParts(result.executionStatus);
-        const response = toolResult(parts.text, {
-          ...result
-        });
-        return result.ok ? response : { ...response, isError: true };
-      } catch (error) {
-        if (error instanceof AppError) {
-          return appErrorToolResult(error, request, env, connectionId);
-        }
-
-        throw error;
-      }
-    }
+      const result = await withRuleWriteRecovery(
+        await service.createRuleChatConfirmed(requireConnection(connectionId), input),
+        request,
+        env,
+        connectionId
+      );
+      const parts = createRuleExecutionResultParts(result.executionStatus);
+      const response = toolResult(
+        [parts.text, result.messageForUser].filter(Boolean).join("\n\n"),
+        { ...result }
+      );
+      return result.ok ? response : { ...response, isError: true };
+    })
   );
 
   server.registerTool(
@@ -317,26 +349,21 @@ function createServer(
       },
       annotations: destructiveAnnotations
     },
-    async (input: z.infer<typeof updateRuleConfirmedSchema>) => {
+    guarded(async (input: z.infer<typeof updateRuleConfirmedSchema>) => {
       const service = new SmartThingsService(env);
-      try {
-        const result = await service.updateRuleChatConfirmed(
-          requireConnection(connectionId),
-          input
-        );
-        const parts = updateRuleExecutionResultParts(result.executionStatus);
-        const response = toolResult(parts.text, {
-          ...result
-        });
-        return result.ok ? response : { ...response, isError: true };
-      } catch (error) {
-        if (error instanceof AppError) {
-          return appErrorToolResult(error, request, env, connectionId);
-        }
-
-        throw error;
-      }
-    }
+      const result = await withRuleWriteRecovery(
+        await service.updateRuleChatConfirmed(requireConnection(connectionId), input),
+        request,
+        env,
+        connectionId
+      );
+      const parts = updateRuleExecutionResultParts(result.executionStatus);
+      const response = toolResult(
+        [parts.text, result.messageForUser].filter(Boolean).join("\n\n"),
+        { ...result }
+      );
+      return result.ok ? response : { ...response, isError: true };
+    })
   );
 
   server.registerTool(
@@ -349,26 +376,21 @@ function createServer(
       },
       annotations: destructiveAnnotations
     },
-    async (input: z.infer<typeof deleteRuleConfirmedSchema>) => {
+    guarded(async (input: z.infer<typeof deleteRuleConfirmedSchema>) => {
       const service = new SmartThingsService(env);
-      try {
-        const result = await service.deleteRuleChatConfirmed(
-          requireConnection(connectionId),
-          input
-        );
-        const parts = deleteRuleExecutionResultParts(result.executionStatus);
-        const response = toolResult(parts.text, {
-          ...result
-        });
-        return result.ok ? response : { ...response, isError: true };
-      } catch (error) {
-        if (error instanceof AppError) {
-          return appErrorToolResult(error, request, env, connectionId);
-        }
-
-        throw error;
-      }
-    }
+      const result = await withRuleWriteRecovery(
+        await service.deleteRuleChatConfirmed(requireConnection(connectionId), input),
+        request,
+        env,
+        connectionId
+      );
+      const parts = deleteRuleExecutionResultParts(result.executionStatus);
+      const response = toolResult(
+        [parts.text, result.messageForUser].filter(Boolean).join("\n\n"),
+        { ...result }
+      );
+      return result.ok ? response : { ...response, isError: true };
+    })
   );
 
   server.registerTool(
@@ -382,26 +404,21 @@ function createServer(
       },
       annotations: destructiveAnnotations
     },
-    async (input: z.infer<typeof setRuleStatusConfirmedSchema>) => {
+    guarded(async (input: z.infer<typeof setRuleStatusConfirmedSchema>) => {
       const service = new SmartThingsService(env);
-      try {
-        const result = await service.setRuleStatusChatConfirmed(
-          requireConnection(connectionId),
-          input
-        );
-        const parts = setRuleStatusExecutionResultParts(result.executionStatus);
-        const response = toolResult(parts.text, {
-          ...result
-        });
-        return result.ok ? response : { ...response, isError: true };
-      } catch (error) {
-        if (error instanceof AppError) {
-          return appErrorToolResult(error, request, env, connectionId);
-        }
-
-        throw error;
-      }
-    }
+      const result = await withRuleWriteRecovery(
+        await service.setRuleStatusChatConfirmed(requireConnection(connectionId), input),
+        request,
+        env,
+        connectionId
+      );
+      const parts = setRuleStatusExecutionResultParts(result.executionStatus);
+      const response = toolResult(
+        [parts.text, result.messageForUser].filter(Boolean).join("\n\n"),
+        { ...result }
+      );
+      return result.ok ? response : { ...response, isError: true };
+    })
   );
 
   server.registerTool(
@@ -421,7 +438,7 @@ function createServer(
       },
       annotations: { ...readOnlyAnnotations, openWorldHint: false }
     },
-    async (filters: {
+    guarded(async (filters: {
       query?: string;
       constructs?: string[];
       triggerCapabilities?: string[];
@@ -439,7 +456,7 @@ function createServer(
         ...(parts.guidance ? { guidance: parts.guidance } : {}),
         references
       });
-    }
+    })
   );
 
   server.registerTool(
@@ -449,7 +466,7 @@ function createServer(
       inputSchema: { referenceId: z.string().trim().min(1) },
       annotations: { ...readOnlyAnnotations, openWorldHint: false }
     },
-    async ({ referenceId }: { referenceId: string }) => {
+    guarded(async ({ referenceId }: { referenceId: string }) => {
       const reference = getRuleReference(referenceId);
       if (!reference) {
         return {
@@ -467,7 +484,7 @@ function createServer(
         ...(parts.guidance ? { guidance: parts.guidance } : {}),
         reference
       });
-    }
+    })
   );
 
   return server;
@@ -485,29 +502,23 @@ function toolResult(text: string, structuredContent: Record<string, unknown>) {
   };
 }
 
+type McpToolResult = ReturnType<typeof toolResult> & { isError?: boolean };
+
 async function patExpiredToolResult(
   request: Request,
   env: Env,
   connectionId: string | null
-) {
-  let url: string;
-  try {
-    url = await reconnectUrlForConnection(request, env, connectionId);
-  } catch (error) {
-    if (error instanceof AppError) {
-      return plainAppErrorToolResult(error);
-    }
-    throw error;
-  }
-  const message = `SmartThings 연결이 만료되었습니다. 아래 링크에서 PAT를 다시 연결하세요: ${url}`;
-  return {
-    ...toolResult(message, {
-      ok: false,
-      code: "SMARTTHINGS_PAT_EXPIRED",
-      reconnectUrl: url
-    }),
-    isError: true
-  };
+): Promise<McpToolResult> {
+  return appErrorToolResult(
+    new AppError(
+      "SMARTTHINGS_PAT_EXPIRED",
+      401,
+      "SmartThings 연결이 만료되었습니다. 웹앱에서 PAT를 다시 연결하세요."
+    ),
+    request,
+    env,
+    connectionId
+  );
 }
 
 async function appErrorToolResult(
@@ -515,27 +526,21 @@ async function appErrorToolResult(
   request: Request,
   env: Env,
   connectionId: string | null
-) {
-  if (error.code === "SMARTTHINGS_PAT_EXPIRED") {
-    return patExpiredToolResult(request, env, connectionId);
-  }
-
-  return plainAppErrorToolResult(error);
-}
-
-function plainAppErrorToolResult(error: AppError) {
+): Promise<McpToolResult> {
+  const body = await patRecoveryErrorBody(error, request, env, connectionId);
   return {
-    ...toolResult(error.messageForUser, {
-      ok: false,
-      code: error.code
-    }),
+    ...toolResult(body.messageForUser, { ...body }),
     isError: true
   };
 }
 
 function requireConnection(connectionId: string | null): string {
   if (!connectionId) {
-    throw new Error("SmartThings 연결이 필요합니다. 웹앱에서 PAT를 먼저 연결하세요.");
+    throw new AppError(
+      "RECONNECT_UNAVAILABLE",
+      401,
+      "AI 연결을 확인할 수 없습니다. ChatGPT 또는 Claude의 연결 메뉴에서 다시 연결하세요."
+    );
   }
 
   return connectionId;

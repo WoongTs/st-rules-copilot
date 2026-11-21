@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import type { AuthRequest, ClientInfo, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
-import { sha256Base64Url } from "./crypto";
-import { readConnectionId } from "./cookies";
+import { randomId, sha256Base64Url } from "./crypto";
+import { buildSessionCookie, readConnectionId } from "./cookies";
 import { AppError } from "./errors";
-import { reconnectUrl } from "./http-utils";
 import { TokenStore } from "./token-store";
+import { createOAuthContinuation, readOAuthContinuation } from "./oauth-continuation";
 import type { Env } from "./types";
 
 export const SMARTTHINGS_RULES_SCOPE = "smartthings:rules";
@@ -18,17 +18,22 @@ oauthApp.get("/authorize", async (c) => {
   const authRequest = await oauth.parseAuthRequest(c.req.raw);
   const client = await requireClient(oauth, authRequest.clientId);
   requireSupportedAuthorizationRequest(c.req.url, client);
-  const connectionId = readConnectionId(c.req.header("Cookie") ?? undefined);
-  if (!connectionId) {
-    return c.redirect(reconnectUrl(c.req.raw, c.env));
-  }
-
-  const pat = await new TokenStore(c.env).getPat(connectionId);
-  if (!pat) {
-    return c.redirect(reconnectUrl(c.req.raw, c.env));
-  }
-
   const scopes = grantedScopes(authRequest.scope);
+  const existingConnectionId = readConnectionId(c.req.header("Cookie") ?? undefined);
+  const connectionId = existingConnectionId ?? randomId("conn");
+  const pat = existingConnectionId
+    ? await new TokenStore(c.env).getPat(connectionId)
+    : null;
+  if (!pat) {
+    const continuation = await createOAuthContinuation(c.req.url, connectionId, c.env);
+    if (!existingConnectionId) {
+      c.header("Set-Cookie", buildSessionCookie(connectionId, c.req.url));
+    }
+    c.header("Cache-Control", "no-store");
+    c.header("Referrer-Policy", "no-referrer");
+    return c.redirect(patSetupUrl(c.req.raw, continuation));
+  }
+
   const csrfToken = randomCsrfToken();
   const csrfRequestHash = await oauthRequestHash(c.req.url);
   const now = Date.now();
@@ -52,6 +57,35 @@ oauthApp.get("/authorize", async (c) => {
     status: 200,
     headers: consentHeaders()
   });
+});
+
+oauthApp.post("/continue", async (c) => {
+  const oauth = requireOAuthHelpers(c.env);
+  const connectionId = readConnectionId(c.req.header("Cookie") ?? undefined);
+  let continuation: string;
+  let authorizeUrl: URL;
+  try {
+    const form = await c.req.raw.formData();
+    continuation = stringFormValue(form, "continuation");
+    authorizeUrl = await readOAuthContinuation(continuation, c.req.url, connectionId, c.env);
+    const authRequest = await oauth.parseAuthRequest(new Request(authorizeUrl));
+    const client = await requireClient(oauth, authRequest.clientId);
+    requireSupportedAuthorizationRequest(authorizeUrl.toString(), client);
+    grantedScopes(authRequest.scope);
+  } catch (error) {
+    if (error instanceof AppError && error.status >= 500) {
+      throw error;
+    }
+    return new Response(continuationFailureHtml(), { status: 400, headers: consentHeaders() });
+  }
+
+  c.header("Cache-Control", "no-store");
+  c.header("Referrer-Policy", "no-referrer");
+  if (!connectionId || !(await new TokenStore(c.env).getPat(connectionId))) {
+    return c.redirect(patSetupUrl(c.req.raw, continuation), 303);
+  }
+  // Resume the original consent page. A PAT save never grants an OAuth authorization.
+  return c.redirect(authorizeUrl.toString(), 303);
 });
 
 oauthApp.post("/authorize/approve", async (c) => {
@@ -267,6 +301,32 @@ function consentHeaders(): Headers {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY"
   });
+}
+
+function patSetupUrl(request: Request, continuation: string): string {
+  // OAuth continuation and the host-only session cookie must stay on one origin.
+  const url = new URL("/connect", request.url);
+  url.hash = new URLSearchParams({ oauth_continue: continuation }).toString();
+  return url.toString();
+}
+
+function continuationFailureHtml(): string {
+  return `<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI 연결을 다시 시작해 주세요</title>
+    <style>body { font-family: system-ui, sans-serif; max-width: 560px; margin: 48px auto; padding: 0 20px; line-height: 1.6; color: #172033; }</style>
+  </head>
+  <body>
+    <main>
+      <h1>AI 연결을 계속할 수 없습니다</h1>
+      <p>연결 요청이 만료되었거나 현재 브라우저에서 확인할 수 없는 요청입니다.</p>
+      <p>ChatGPT 또는 Claude로 돌아가 연결을 다시 시작해 주세요. 연결 승인은 아직 완료되지 않았습니다.</p>
+    </main>
+  </body>
+</html>`;
 }
 
 function randomCsrfToken(): string {

@@ -7,6 +7,20 @@ import type {
   StatusBody
 } from "../types";
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly reconnectUrl?: string;
+
+  constructor(status: number, body: ApiErrorBody | null) {
+    super(body?.messageForUser || "요청이 실패했습니다.");
+    this.name = "ApiError";
+    this.status = status;
+    this.code = body?.code || "REQUEST_FAILED";
+    this.reconnectUrl = body?.reconnectUrl;
+  }
+}
+
 export async function createSession(): Promise<{ ok: true }> {
   return request("/api/session", { method: "POST" });
 }
@@ -66,10 +80,13 @@ async function request<T = { ok: true }>(
     }
   });
 
-  const body = (await response.json()) as unknown;
+  const body: unknown = await response.json().catch(() => null);
   if (!response.ok || isApiErrorBody(body)) {
     const errorBody = isApiErrorBody(body) ? body : null;
-    throw new Error(errorBody?.messageForUser || "요청이 실패했습니다.");
+    throw new ApiError(response.status, errorBody);
+  }
+  if (body === null) {
+    throw new ApiError(response.status, null);
   }
 
   return body as T;
@@ -80,6 +97,11 @@ function isApiErrorBody(value: unknown): value is ApiErrorBody {
     typeof value === "object" &&
     value !== null &&
     "ok" in value &&
-    value.ok === false
+    value.ok === false &&
+    "code" in value &&
+    typeof value.code === "string" &&
+    "messageForUser" in value &&
+    typeof value.messageForUser === "string" &&
+    (!("reconnectUrl" in value) || typeof value.reconnectUrl === "string")
   );
 }

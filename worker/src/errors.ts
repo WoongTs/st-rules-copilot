@@ -1,6 +1,8 @@
 export type AppErrorCode =
   | "INVALID_REQUEST"
   | "MISSING_SESSION"
+  | "RECONNECT_LINK_INVALID"
+  | "RECONNECT_UNAVAILABLE"
   | "SMARTTHINGS_PAT_EXPIRED"
   | "SMARTTHINGS_AUTH_FAILED"
   | "SMARTTHINGS_PERMISSION_DENIED"
@@ -26,10 +28,24 @@ export class AppError extends Error {
   }
 }
 
-export function toErrorBody(error: unknown, reconnectUrl?: string) {
+export interface AppErrorBody {
+  ok: false;
+  code: AppErrorCode;
+  messageForUser: string;
+  reconnectUrl?: string;
+}
+
+export function isPatRecoveryError(error: unknown): error is AppError {
+  return error instanceof AppError && (
+    error.code === "SMARTTHINGS_PAT_EXPIRED" ||
+    error.code === "SMARTTHINGS_AUTH_FAILED"
+  );
+}
+
+export function toErrorBody(error: unknown, reconnectUrl?: string): AppErrorBody {
   if (error instanceof AppError) {
     const messageForUser =
-      reconnectUrl && error.code === "SMARTTHINGS_PAT_EXPIRED"
+      reconnectUrl && isPatRecoveryError(error)
         ? reconnectMessage(error.messageForUser, reconnectUrl)
         : error.messageForUser;
 
@@ -37,7 +53,7 @@ export function toErrorBody(error: unknown, reconnectUrl?: string) {
       ok: false as const,
       code: error.code,
       messageForUser,
-      ...(reconnectUrl && error.code === "SMARTTHINGS_PAT_EXPIRED"
+      ...(reconnectUrl && isPatRecoveryError(error)
         ? { reconnectUrl }
         : {})
     };

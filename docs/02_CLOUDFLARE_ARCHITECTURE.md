@@ -90,11 +90,16 @@ authorization server metadata와 protected resource metadata는 표준 `.well-kn
 
 ```text
 GET  /oauth/authorize
+POST /oauth/continue
 POST /oauth/authorize/approve
 ```
 
-GET은 동의 화면만 렌더링한다. 승인은 현재 연결과 OAuth 요청 hash에 묶인 일회성 nonce를
-검증한 POST에서만 완료한다.
+GET은 동의 화면을 표시하거나 PAT 설정으로 이동한다. cookie/PAT가 없으면 검증된
+원래 요청을 10분짜리 암호화 continuation에 보관하고 같은 origin의
+`/connect#oauth_continue=...`로 이동한다. PAT 저장 후 `/oauth/continue`에 form body로
+제출하면 원래 동의 화면으로 돌아간다. continuation은 브라우저 connection과 origin에
+묶이며 client·redirect·scope·PKCE를 다시 검증한다. 승인은 기존 일회성 nonce를 검증하는
+`/oauth/authorize/approve` POST에서만 완료한다.
 
 ## OAuth client 정책
 
@@ -120,18 +125,24 @@ confidential client를 사용한다. 이 차이는 OAuth adapter 경계에만 �
 - PAT 재등록: 기존 AI 승인을 재사용
 - 연결 초기화: ConnectionGate를 먼저 inactive로 만들고 PAT/reconnect nonce를 지운 뒤
   OAuth grant를 폐기하고 새 `connectionId` 발급
-- PAT 만료: 10분짜리 opaque reconnect URL로 기존 AI 연결에 PAT를 다시 저장
+- PAT 없음·만료 또는 SmartThings의 401 거부: 10분짜리 opaque reconnect URL로 기존
+  AI 연결에 PAT를 다시 저장
 
 reconnect URL은 `/connect#reconnect=...` 형식을 사용한다. URL fragment는 HTTP 요청과
-Workers invocation log에 전달되지 않으며, browser가 읽은 뒤 주소창에서 즉시 제거한다.
+Workers invocation log에 전달되지 않는다. browser는 탭의 sessionStorage에 복구 정보를
+보관한 후 주소창에서 제거하며 새로고침에도 같은 대상과 기한을 유지한다. 저장소가
+차단되면 fragment를 유지한다. 성공·취소·만료 시 임시 token을 정리하고 만료·완료 상태는
+일반 연결 화면으로 명시적으로 이동할 때까지 표시한다. PAT는 이 저장소에 넣지 않는다.
 서버는 reconnect ticket을 JSON body로만 받으며 구형 query 형식은 해석하지 않는다.
+잘못된 새 PAT는 기존 ticket을 소비하지 않고, ticket 발급 실패를 일반 `/connect`로
+대체하지 않는다.
 
 ## 공개 요청 보호
 
 Cloudflare 기본 DDoS 방어는 그대로 사용한다. 애플리케이션 제한은 일반 조회가 아니라
 정상 요청 형태로 서버 또는 SmartThings 자원을 반복 소비하는 경우만 대상으로 한다.
 
-- 세션 생성·초기화, PAT 연결, OAuth 등록·token·승인 POST: 행위자별 30회/분
+- 세션 생성·초기화, PAT 연결, OAuth 등록·token·이어하기·승인 POST: 행위자별 30회/분
 - 세션 초기화와 PAT 연결: 같은 제한에 IP+route 보조 bucket을 추가해 cookie 회전을 제한
 - OAuth token: browser cookie보다 OAuth client ID를 actor로 우선 사용
 - SmartThings Rule write와 reconnect ticket 발급: connection별 합산 10회/분
