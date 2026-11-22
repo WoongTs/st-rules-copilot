@@ -76,19 +76,17 @@ Action authorize
 PKCE 생략을 허용한다. public client는 S256이 필수이고 explicit `plain`은 항상
 거부한다.
 
-client secret은 문서나 repo에 기록하지 않는다. Builder가 OAuth 자격 증명을 다시
-저장하면 callback URL이 바뀔 수 있으므로, 저장 뒤 표시되는 `chat.openai.com`과
-`chatgpt.com` callback을 배포 Worker의 `GPT_ACTIONS_REDIRECT_URIS` exact allowlist에
-반영해 배포한다. Worker는 해당 `GPT_ACTIONS_CLIENT_ID`의 authorize 요청에 한해서만
-공식 OAuth Provider helper로 등록 정보를 동기화한다. 요청에 실린 임의 callback은
-등록하지 않으며 client secret과 그 밖의 metadata는 변경하지 않는다.
+client secret은 문서나 저장소에 기록하지 않는다. 고정 GPT client는 공식 OAuth Provider
+`createClient` helper로 만료일 없이 사전 등록하고 `client_secret_post`를 사용한다.
+Worker는 승인 시작·재개·완료 시 배포 설정의 client ID와 exact callback이 등록과
+일치하는지 검사한다. 등록 누락이나 불일치는 `CONFIGURATION_ERROR`로 처리한다.
 
-따라서 GPT OAuth 설정 순서는 다음과 같다.
-
-1. confidential client를 등록하고 client ID/secret을 Builder에 저장한다.
-2. 저장 뒤 Builder가 최종 표시하는 두 callback을 확인한다.
-3. client ID와 두 exact callback을 Worker vars에 반영해 배포한다.
-4. 새 사용자 OAuth 승인과 Action read를 실제로 수행한다.
+1. confidential client를 사전 등록하고 client ID와 secret을 Builder에 입력한다.
+2. 저장 후 Builder에 표시되는 `chat.openai.com`과 `chatgpt.com` callback을 확인한다.
+3. callback이 바뀌었다면 운영자가 기존 등록의 callback만 갱신한다. 공식 `updateClient`
+   helper를 `clientRegistrationTTL: undefined`로 구성해 기존 secret과 무기한 등록을 유지한다.
+4. 등록과 동일한 client ID와 callback을 Worker 변수에 반영해 배포한다.
+5. 새 사용자 OAuth 승인과 Action 조회를 검증한다.
 
 ## 응답 원칙
 

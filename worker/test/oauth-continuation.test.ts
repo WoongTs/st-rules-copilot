@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { env as workerEnv } from "cloudflare:workers";
+import { getOAuthApi } from "@cloudflare/workers-oauth-provider";
+import { oauthProviderOptions } from "../src";
 import { OAUTH_CONTINUATION_TTL_SECONDS } from "../src/oauth-continuation";
 import { TokenStore } from "../src/token-store";
 import type { Env } from "../src/types";
@@ -281,18 +283,58 @@ describe("OAuth authorization continuation after PAT setup", () => {
     expectNoAuthorization();
   });
 
-  it.each(["scope", "pkce"])("validates unsupported %s before offering PAT setup", async (kind) => {
+  it("rejects an unsupported scope before offering PAT setup", async () => {
     const authorization = await newAuthorization();
-    if (kind === "scope") {
-      authorization.searchParams.set("scope", "unrelated:scope");
-    } else {
-      authorization.searchParams.delete("code_challenge");
-      authorization.searchParams.delete("code_challenge_method");
-    }
+    authorization.searchParams.set("scope", "unrelated:scope");
     const response = await workerRequest(authorization, undefined, env);
     expect(response.status).toBe(400);
     expect(response.headers.get("Location")).toBeNull();
     expect(response.headers.get("Set-Cookie")).toBeNull();
+    expectNoAuthorization();
+  });
+
+  it("returns missing PKCE to the validated callback before offering PAT setup", async () => {
+    const authorization = await newAuthorization();
+    authorization.searchParams.delete("code_challenge");
+    authorization.searchParams.delete("code_challenge_method");
+    const response = await workerRequest(authorization, undefined, env);
+    expect(response.status).toBe(302);
+    const callback = new URL(response.headers.get("Location") ?? "");
+    expect(callback.origin + callback.pathname).toBe(CALLBACK);
+    expect(callback.searchParams.get("error")).toBe("invalid_request");
+    expect(callback.searchParams.get("state")).toBe(STATE);
+    expect(response.headers.get("Set-Cookie")).toBeNull();
+    expectNoAuthorization();
+  });
+
+  it("rejects resuming a fixed GPT client that no longer matches its configuration", async () => {
+    const callback = "https://chatgpt.com/aip/g-test/oauth/callback";
+    const updatedCallback = "https://chatgpt.com/aip/g-updated/oauth/callback";
+    const oauth = getOAuthApi({ ...oauthProviderOptions, clientRegistrationTTL: undefined }, env);
+    const client = await oauth.createClient({
+      redirectUris: [callback],
+      tokenEndpointAuthMethod: "client_secret_post"
+    });
+    env.GPT_ACTIONS_CLIENT_ID = client.clientId;
+    env.GPT_ACTIONS_REDIRECT_URIS = JSON.stringify([callback]);
+    const authorization = new URL("http://localhost/oauth/authorize");
+    authorization.search = new URLSearchParams({
+      response_type: "code",
+      client_id: client.clientId,
+      redirect_uri: callback,
+      scope: "smartthings:rules"
+    }).toString();
+
+    const { continuation, cookie } = await start(authorization);
+    await savePat(cookie);
+    await oauth.updateClient(client.clientId, { redirectUris: [updatedCallback] });
+
+    const response = await resume(continuation, cookie);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: "CONFIGURATION_ERROR" });
+    expect(response.headers.get("Location")).toBeNull();
+    expect((await oauth.lookupClient(client.clientId))?.redirectUris).toEqual([updatedCallback]);
+    expect(oauthKv.values.get(`client:${client.clientId}`)?.expiresAt).toBeUndefined();
     expectNoAuthorization();
   });
 
