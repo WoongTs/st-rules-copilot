@@ -16,9 +16,11 @@ MCP 구현 용어는 설정 안내 외에는 최소화한다.
 6. 연결 승인 후 Claude 대화에서 Rule 요청
 ```
 
-Claude connector는 dynamic client registration과 PKCE S256을 사용한다. access token은
-1시간이고 refresh token/grant와 dynamic client는 최대 30일 유지될 수 있다. 연결
-초기화나 만료 후에는 다시 승인한다.
+MCP 서버는 CIMD와 dynamic client registration을 지원한다. 공개 클라이언트의 OAuth는
+PKCE S256을 사용한다. access token은 1시간이고 refresh token과 grant는 최대 30일이다.
+동적 등록은 최초 1년이며, 승인 코드나 refresh token 교환에 성공할 때마다 1년 연장한다.
+SmartThings PAT만 만료된 경우 기존 커넥터의 복구 링크로 PAT를 다시 등록한다. OAuth 승인
+자체가 만료되거나 연결을 초기화한 경우 기존 커넥터에서 다시 승인한다.
 
 ## 대화 흐름
 

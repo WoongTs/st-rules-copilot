@@ -1,5 +1,11 @@
 import { Hono } from "hono";
-import type { AuthRequest, ClientInfo, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import {
+  AuthorizationError,
+  CimdFetchError,
+  type AuthRequest,
+  type ClientInfo,
+  type OAuthHelpers
+} from "@cloudflare/workers-oauth-provider";
 import { randomId, sha256Base64Url } from "./crypto";
 import { buildSessionCookie, readConnectionId } from "./cookies";
 import { AppError } from "./errors";
@@ -14,10 +20,11 @@ const CSRF_TTL_MILLISECONDS = 10 * 60 * 1_000;
 export const oauthApp = new Hono<{ Bindings: Env }>();
 
 oauthApp.get("/authorize", async (c) => {
-  const oauth = requireOAuthHelpers(c.env);
-  const authRequest = await oauth.parseAuthRequest(c.req.raw);
-  const client = await requireClient(oauth, authRequest.clientId);
-  requireSupportedAuthorizationRequest(c.req.url, client);
+  const authorization = await readAuthorizationRequest(c.env, c.req.raw);
+  if (authorization instanceof Response) {
+    return authorization;
+  }
+  const { authRequest, client } = authorization;
   const scopes = grantedScopes(authRequest.scope);
   const existingConnectionId = readConnectionId(c.req.header("Cookie") ?? undefined);
   const connectionId = existingConnectionId ?? randomId("conn");
@@ -60,7 +67,6 @@ oauthApp.get("/authorize", async (c) => {
 });
 
 oauthApp.post("/continue", async (c) => {
-  const oauth = requireOAuthHelpers(c.env);
   const connectionId = readConnectionId(c.req.header("Cookie") ?? undefined);
   let continuation: string;
   let authorizeUrl: URL;
@@ -68,15 +74,16 @@ oauthApp.post("/continue", async (c) => {
     const form = await c.req.raw.formData();
     continuation = stringFormValue(form, "continuation");
     authorizeUrl = await readOAuthContinuation(continuation, c.req.url, connectionId, c.env);
-    const authRequest = await oauth.parseAuthRequest(new Request(authorizeUrl));
-    const client = await requireClient(oauth, authRequest.clientId);
-    requireSupportedAuthorizationRequest(authorizeUrl.toString(), client);
-    grantedScopes(authRequest.scope);
+    const authorization = await readAuthorizationRequest(c.env, new Request(authorizeUrl));
+    if (authorization instanceof Response) {
+      return invalidContinuationResponse();
+    }
+    grantedScopes(authorization.authRequest.scope);
   } catch (error) {
     if (error instanceof AppError && error.status >= 500) {
       throw error;
     }
-    return new Response(continuationFailureHtml(), { status: 400, headers: consentHeaders() });
+    return invalidContinuationResponse();
   }
 
   c.header("Cache-Control", "no-store");
@@ -89,10 +96,11 @@ oauthApp.post("/continue", async (c) => {
 });
 
 oauthApp.post("/authorize/approve", async (c) => {
-  const oauth = requireOAuthHelpers(c.env);
-  const authRequest = await oauth.parseAuthRequest(c.req.raw);
-  const client = await requireClient(oauth, authRequest.clientId);
-  requireSupportedAuthorizationRequest(c.req.url, client);
+  const authorization = await readAuthorizationRequest(c.env, c.req.raw);
+  if (authorization instanceof Response) {
+    return authorization;
+  }
+  const { authRequest, client } = authorization;
   const scopes = grantedScopes(authRequest.scope);
   const form = await c.req.raw.formData();
   const submittedCsrf = stringFormValue(form, "csrf_token");
@@ -129,7 +137,7 @@ oauthApp.post("/authorize/approve", async (c) => {
     throw new AppError("INVALID_REQUEST", 400, "OAuth 승인 여부를 선택하세요.");
   }
 
-  const { redirectTo } = await oauth.completeAuthorization({
+  const { redirectTo } = await requireOAuthHelpers(c.env).completeAuthorization({
     request: authRequest,
     userId: connectionId,
     metadata: {
@@ -152,6 +160,136 @@ function requireOAuthHelpers(env: Env): OAuthHelpers {
     );
   }
   return env.OAUTH_PROVIDER;
+}
+
+async function readAuthorizationRequest(
+  env: Env,
+  request: Request
+): Promise<{ authRequest: AuthRequest; client: ClientInfo } | Response> {
+  const oauth = requireOAuthHelpers(env);
+  const url = new URL(request.url);
+  const fixedClient = await readConfiguredGptClient(oauth, env, url);
+  try {
+    const authRequest = await oauth.parseAuthRequest(request);
+    const client = fixedClient ?? (await requireClient(oauth, authRequest.clientId));
+    requireSupportedAuthorizationRequest(request.url, client);
+    return { authRequest, client };
+  } catch (error) {
+    if (error instanceof AuthorizationError && error.redirectUri) {
+      const redirect = new URL(error.redirectUri);
+      redirect.searchParams.set("error", error.code);
+      if (error.state) {
+        redirect.searchParams.set("state", error.state);
+      }
+      if (error.issuer) {
+        redirect.searchParams.set("iss", error.issuer);
+      }
+      return Response.redirect(redirect, 302);
+    }
+    if (error instanceof AuthorizationError || error instanceof CimdFetchError) {
+      throw new AppError(
+        "INVALID_REQUEST",
+        400,
+        "OAuth 연결 요청이 올바르지 않거나 등록이 만료되었습니다. AI 클라이언트에서 연결을 다시 시작하세요."
+      );
+    }
+    throw error;
+  }
+}
+
+async function readConfiguredGptClient(
+  oauth: OAuthHelpers,
+  env: Env,
+  url: URL
+): Promise<ClientInfo | null> {
+  const clientId = env.GPT_ACTIONS_CLIENT_ID?.trim();
+  if (!clientId || url.searchParams.get("client_id") !== clientId) {
+    return null;
+  }
+
+  const redirectUris = configuredGptRedirectUris(env.GPT_ACTIONS_REDIRECT_URIS);
+  if (redirectUris.length === 0) {
+    throw gptConfigurationError();
+  }
+  const requestedRedirectUri = url.searchParams.get("redirect_uri");
+  if (!requestedRedirectUri || !redirectUris.includes(requestedRedirectUri)) {
+    throw new AppError("INVALID_REQUEST", 400, "등록된 GPT callback과 일치하지 않습니다.");
+  }
+
+  const client = await oauth.lookupClient(clientId).catch(() => {
+    throw gptConfigurationError();
+  });
+  if (
+    !client?.clientSecret ||
+    client.tokenEndpointAuthMethod !== "client_secret_post" ||
+    !sameStringSet(client.redirectUris, redirectUris)
+  ) {
+    throw gptConfigurationError();
+  }
+  return client;
+}
+
+function gptConfigurationError(): AppError {
+  return new AppError(
+    "CONFIGURATION_ERROR",
+    503,
+    "GPT 인증 설정을 확인하는 중 문제가 발견되었습니다. 잠시 후 다시 시도하세요."
+  );
+}
+
+function configuredGptRedirectUris(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 2) {
+    return [];
+  }
+
+  const redirectUris = [...new Set(parsed)];
+  if (
+    redirectUris.length !== parsed.length ||
+    redirectUris.some((redirectUri) => !isAllowedGptRedirectUri(redirectUri))
+  ) {
+    return [];
+  }
+  return redirectUris as string[];
+}
+
+function isAllowedGptRedirectUri(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      (url.hostname === "chat.openai.com" || url.hostname === "chatgpt.com") &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.search === "" &&
+      url.hash === "" &&
+      /^\/aip\/g-[A-Za-z0-9_-]+\/oauth\/callback$/u.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return left.length === right.length && right.every((value) => left.includes(value));
+}
+
+function invalidContinuationResponse(): Response {
+  return new Response(continuationFailureHtml(), { status: 400, headers: consentHeaders() });
 }
 
 async function requireClient(
@@ -233,6 +371,9 @@ function deniedRedirect(authRequest: AuthRequest): string {
   redirect.searchParams.set("error_description", "The user denied the authorization request.");
   if (authRequest.state) {
     redirect.searchParams.set("state", authRequest.state);
+  }
+  if (authRequest.issuer) {
+    redirect.searchParams.set("iss", authRequest.issuer);
   }
   return redirect.toString();
 }

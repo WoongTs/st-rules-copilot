@@ -35,15 +35,16 @@ Cloudflare Workers OAuth Provider가 client registration, authorization code, gr
 access/refresh token을 관리한다. 애플리케이션은 Provider 저장 형식을 다시 구현하지
 않는다.
 
-GPT Builder가 자격 증명 저장 뒤 callback 식별자를 바꾸는 경우에도 Provider KV를 직접
-수정하지 않는다. 배포 설정에 둔 client ID와 exact OpenAI callback allowlist가
-일치하는 authorize 요청에서만 공식 Provider `updateClient` helper를 사용한다. 이 갱신은
-redirect URI만 교체하고 confidential client secret과 나머지 metadata를 보존한다. 요청자가
-allowlist 밖의 callback을 추가하거나 다른 client를 갱신할 수 없어야 한다.
+고정 GPT Actions client는 공식 Provider helper로 만료일 없이 사전 등록한다. Worker는
+client ID, `client_secret_post`, exact OpenAI callback이 운영 설정과 일치하는지 검사한다.
+누락이나 불일치 시 승인을 중단하며 사용자 요청 중 등록을 수정하지 않는다. callback
+변경은 운영자가 등록과 배포 설정에 함께 반영한다.
 
 - scope: `smartthings:rules`
 - access token: 1시간
-- refresh token/grant, dynamic client: 최대 30일
+- refresh token과 grant: 최대 30일
+- MCP 동적 등록(DCR): 최초 1년, 성공한 승인 코드 또는 refresh token 교환마다 1년 연장
+- MCP는 HTTPS CIMD도 지원하며, 해당 client는 자체 metadata 문서로 관리된다.
 - public client: PKCE S256 필수
 - confidential `client_secret_basic|client_secret_post`: exact redirect URI와 secret 검증
   후 PKCE 생략 가능
@@ -126,9 +127,8 @@ unlock, disarm, gas/oven, heater처럼 영향이 큰 자동화는 초안 자체�
 ## 로그 정책
 
 Workers Logs 기능은 유지하되 private 실제 Wrangler 설정과 공개 예시 모두 자동
-invocation log를 명시적으로 끈다. 현재 애플리케이션에는 의도적인 `console.*` 운영 로그가
-없다. 향후 custom 운영 로그가 실제로 필요해질 때만 아래 허용 목록으로 작은 구조화 로그를
-추가하고 Privacy Policy에 처리 항목과 보관 기간을 함께 반영한다.
+invocation log를 명시적으로 끈다. DCR 등록 연장 실패는 요청 정보나 client ID 없이 고정
+문구만 기록한다.
 
 허용:
 

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { env as workerEnv } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { app } from "../src";
+import { getOAuthApi } from "@cloudflare/workers-oauth-provider";
+import { app, oauthProviderOptions } from "../src";
+import { DYNAMIC_CLIENT_REGISTRATION_TTL_SECONDS } from "../src/oauth-config";
 import { readConnectionId } from "../src/cookies";
 import { decryptReconnectTicket } from "../src/crypto";
 import { RECONNECT_TICKET_TTL_SECONDS } from "../src/reconnect-ticket-store";
@@ -4167,7 +4169,12 @@ describe("SmartThings Rules Copilot Worker", () => {
       { headers: { Cookie: cookie } },
       env
     );
-    expect(plainPkce.status).toBe(400);
+    expect(plainPkce.status).toBe(302);
+    const plainPkceError = new URL(plainPkce.headers.get("Location") ?? "");
+    expect(plainPkceError.origin + plainPkceError.pathname).toBe(
+      "https://client.example/callback"
+    );
+    expect(plainPkceError.searchParams.get("error")).toBe("invalid_request");
   });
 
   it("issues OAuth tokens that map back to the web session connection", async () => {
@@ -4194,8 +4201,11 @@ describe("SmartThings Rules Copilot Worker", () => {
       client_secret_expires_at: number;
     };
     expect(client.client_secret_expires_at - client.client_id_issued_at).toBe(
-      30 * 24 * 60 * 60
+      DYNAMIC_CLIENT_REGISTRATION_TTL_SECONDS
     );
+    const clientKey = `client:${client.client_id}`;
+    const registeredClient = oauthKv.values.get(clientKey);
+    expect(registeredClient?.expiresAt).toBeDefined();
 
     const session = await app.request("/api/session", { method: "POST" }, env);
     const cookie = session.headers.get("Set-Cookie") ?? "";
@@ -4292,6 +4302,10 @@ describe("SmartThings Rules Copilot Worker", () => {
       client_secret: client.client_secret,
       code_verifier: codeVerifier
     }).toString();
+    if (!registeredClient) {
+      throw new Error("OAuth client was not stored.");
+    }
+    registeredClient.expiresAt = Date.now() + 60_000;
     const token = await workerRequest(
       "/oauth/token",
       {
@@ -4313,6 +4327,9 @@ describe("SmartThings Rules Copilot Worker", () => {
     expect(tokenBody.expires_in).toBe(60 * 60);
     expect(tokenBody.refresh_token).not.toBe("");
     expect(tokenBody.scope).toBe("smartthings:rules");
+    expect((oauthKv.values.get(clientKey)?.expiresAt ?? 0) - Date.now()).toBeGreaterThan(
+      DYNAMIC_CLIENT_REGISTRATION_TTL_SECONDS * 1_000 - 5_000
+    );
 
     const locations = await workerRequest(
       "/action/locations",
@@ -4327,6 +4344,11 @@ describe("SmartThings Rules Copilot Worker", () => {
       }
     });
 
+    const clientBeforeRefresh = oauthKv.values.get(clientKey);
+    if (!clientBeforeRefresh) {
+      throw new Error("OAuth client disappeared before refresh.");
+    }
+    clientBeforeRefresh.expiresAt = Date.now() + 60_000;
     const refreshed = await workerRequest(
       "/oauth/token",
       {
@@ -4352,6 +4374,9 @@ describe("SmartThings Rules Copilot Worker", () => {
     expect(refreshedBody.token_type).toBe("Bearer");
     expect(refreshedBody.expires_in).toBe(60 * 60);
     expect(refreshedBody.scope).toBe("smartthings:rules");
+    expect((oauthKv.values.get(clientKey)?.expiresAt ?? 0) - Date.now()).toBeGreaterThan(
+      DYNAMIC_CLIENT_REGISTRATION_TTL_SECONDS * 1_000 - 5_000
+    );
     const refreshedLocations = await workerRequest(
       "/action/locations",
       { headers: { Authorization: `Bearer ${refreshedBody.access_token}` } },
@@ -4359,6 +4384,12 @@ describe("SmartThings Rules Copilot Worker", () => {
     );
     expect(refreshedLocations.status).toBe(200);
 
+    const clientBeforeRejectedExchange = oauthKv.values.get(clientKey);
+    if (!clientBeforeRejectedExchange) {
+      throw new Error("OAuth client disappeared before rejected exchange.");
+    }
+    clientBeforeRejectedExchange.expiresAt = Date.now() + 60_000;
+    const expiresBeforeRejectedExchange = clientBeforeRejectedExchange.expiresAt;
     const reusedCode = await workerRequest(
       "/oauth/token",
       {
@@ -4370,37 +4401,24 @@ describe("SmartThings Rules Copilot Worker", () => {
     );
     expect(reusedCode.status).toBe(400);
     expect(await reusedCode.json()).toMatchObject({ error: "invalid_grant" });
+    expect(oauthKv.values.get(clientKey)?.expiresAt).toBe(expiresBeforeRejectedExchange);
   });
 
-  it("reconciles only the deploy-configured GPT callbacks and preserves the client secret", async () => {
-    const initialRedirectUri =
-      "https://chat.openai.com/aip/g-before-builder-save/oauth/callback";
+  it("uses a pre-registered GPT client without adding a runtime expiry", async () => {
     const configuredRedirectUris = [
       "https://chat.openai.com/aip/g-after-builder-save/oauth/callback",
       "https://chatgpt.com/aip/g-after-builder-save/oauth/callback"
     ];
-    const registered = await workerRequest(
-      "/oauth/register",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          redirect_uris: [initialRedirectUri],
-          client_name: "Rules Copilot GPT callback reconciliation test",
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          token_endpoint_auth_method: "client_secret_post"
-        })
-      },
-      env
-    );
-    expect(registered.status).toBe(201);
-    const client = (await registered.json()) as {
-      client_id: string;
-      client_secret: string;
-    };
-    env.GPT_ACTIONS_CLIENT_ID = client.client_id;
+    const client = await getOAuthApi(oauthProviderOptions, env).createClient({
+      redirectUris: configuredRedirectUris,
+      clientName: "SmartThings Rules Copilot GPT Actions",
+      grantTypes: ["authorization_code", "refresh_token"],
+      responseTypes: ["code"],
+      tokenEndpointAuthMethod: "client_secret_post"
+    });
+    env.GPT_ACTIONS_CLIENT_ID = client.clientId;
     env.GPT_ACTIONS_REDIRECT_URIS = JSON.stringify(configuredRedirectUris);
+    expect(oauthKv.values.get(`client:${client.clientId}`)?.expiresAt).toBeUndefined();
 
     const session = await app.request("/api/session", { method: "POST" }, env);
     const cookie = session.headers.get("Set-Cookie") ?? "";
@@ -4419,19 +4437,10 @@ describe("SmartThings Rules Copilot Worker", () => {
 
     const authorizeUrl = new URL("http://localhost/oauth/authorize");
     authorizeUrl.searchParams.set("response_type", "code");
-    authorizeUrl.searchParams.set("client_id", client.client_id);
+    authorizeUrl.searchParams.set("client_id", client.clientId);
     authorizeUrl.searchParams.set("redirect_uri", configuredRedirectUris[0]);
-    authorizeUrl.searchParams.set("state", "gpt-callback-reconciled");
+    authorizeUrl.searchParams.set("state", "gpt-fixed-client");
     authorizeUrl.searchParams.set("scope", "smartthings:rules");
-
-    const reconciliation = await workerRequest(
-      authorizeUrl,
-      { headers: { Cookie: cookie } },
-      env
-    );
-    expect(reconciliation.status).toBe(302);
-    expect(reconciliation.headers.get("Location")).toBe(authorizeUrl.toString());
-    expect(reconciliation.headers.get("Cache-Control")).toBe("no-store");
 
     const { authorized } = await approveOAuthRequest(authorizeUrl, cookie, env);
     expect(authorized.status).toBe(302);
@@ -4449,13 +4458,14 @@ describe("SmartThings Rules Copilot Worker", () => {
           grant_type: "authorization_code",
           code,
           redirect_uri: configuredRedirectUris[0],
-          client_id: client.client_id,
-          client_secret: client.client_secret
+          client_id: client.clientId,
+          client_secret: client.clientSecret ?? ""
         }).toString()
       },
       env
     );
     expect(token.status).toBe(200);
+    expect(oauthKv.values.get(`client:${client.clientId}`)?.expiresAt).toBeUndefined();
 
     authorizeUrl.searchParams.set("redirect_uri", configuredRedirectUris[1]);
     const secondConfiguredCallback = await workerRequest(
@@ -4464,55 +4474,57 @@ describe("SmartThings Rules Copilot Worker", () => {
       env
     );
     expect(secondConfiguredCallback.status).toBe(200);
-
-    authorizeUrl.searchParams.set("redirect_uri", initialRedirectUri);
-    const staleCallback = await workerRequest(
-      authorizeUrl,
-      { headers: { Cookie: cookie } },
-      env
-    );
-    expect(staleCallback.status).not.toBe(200);
   });
 
-  it("does not reconcile a GPT callback outside the deploy allowlist", async () => {
+  it("fails closed when the configured GPT client is missing or mismatched", async () => {
     const initialRedirectUri =
       "https://chat.openai.com/aip/g-original-client/oauth/callback";
-    const registered = await workerRequest(
-      "/oauth/register",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          redirect_uris: [initialRedirectUri],
-          client_name: "Rules Copilot GPT callback rejection test",
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          token_endpoint_auth_method: "client_secret_post"
-        })
-      },
-      env
-    );
-    const client = (await registered.json()) as { client_id: string };
-    env.GPT_ACTIONS_CLIENT_ID = client.client_id;
-    env.GPT_ACTIONS_REDIRECT_URIS = JSON.stringify([
-      "https://chat.openai.com/aip/g-configured-client/oauth/callback"
-    ]);
+    const configuredRedirectUri =
+      "https://chat.openai.com/aip/g-configured-client/oauth/callback";
+    const client = await getOAuthApi(oauthProviderOptions, env).createClient({
+      redirectUris: [initialRedirectUri],
+      clientName: "Rules Copilot GPT callback rejection test",
+      grantTypes: ["authorization_code", "refresh_token"],
+      responseTypes: ["code"],
+      tokenEndpointAuthMethod: "client_secret_post"
+    });
+    env.GPT_ACTIONS_CLIENT_ID = client.clientId;
+    env.GPT_ACTIONS_REDIRECT_URIS = JSON.stringify([configuredRedirectUri]);
 
     const authorizeUrl = new URL("http://localhost/oauth/authorize");
     authorizeUrl.searchParams.set("response_type", "code");
-    authorizeUrl.searchParams.set("client_id", client.client_id);
+    authorizeUrl.searchParams.set("client_id", client.clientId);
     authorizeUrl.searchParams.set(
       "redirect_uri",
       "https://chat.openai.com/aip/g-untrusted-client/oauth/callback"
     );
     authorizeUrl.searchParams.set("scope", "smartthings:rules");
     const untrustedCallback = await workerRequest(authorizeUrl, {}, env);
-    expect(untrustedCallback.status).not.toBe(200);
+    expect(untrustedCallback.status).toBe(400);
+    expect(await untrustedCallback.json()).toMatchObject({
+      ok: false,
+      code: "INVALID_REQUEST"
+    });
 
-    authorizeUrl.searchParams.set("redirect_uri", initialRedirectUri);
-    const originalCallback = await workerRequest(authorizeUrl, {}, env);
-    expect(originalCallback.status).toBe(302);
-    expect(originalCallback.headers.get("Location")).toContain("/connect");
+    authorizeUrl.searchParams.set("redirect_uri", configuredRedirectUri);
+    const mismatchedClient = await workerRequest(authorizeUrl, {}, env);
+    expect(mismatchedClient.status).toBe(503);
+    expect(await mismatchedClient.json()).toMatchObject({
+      ok: false,
+      code: "CONFIGURATION_ERROR"
+    });
+    expect(
+      JSON.parse(oauthKv.values.get(`client:${client.clientId}`)?.value ?? "{}")
+    ).toMatchObject({ redirectUris: [initialRedirectUri] });
+
+    env.GPT_ACTIONS_CLIENT_ID = "missing-fixed-client";
+    authorizeUrl.searchParams.set("client_id", "missing-fixed-client");
+    const missingClient = await workerRequest(authorizeUrl, {}, env);
+    expect(missingClient.status).toBe(503);
+    expect(await missingClient.json()).toMatchObject({
+      ok: false,
+      code: "CONFIGURATION_ERROR"
+    });
   });
 
   it.each(["client_secret_post", "client_secret_basic"] as const)(
@@ -4656,7 +4668,10 @@ describe("SmartThings Rules Copilot Worker", () => {
       { headers: { Cookie: cookiePair(cookie) } },
       env
     );
-    expect(missingPkce.status).toBe(400);
+    expect(missingPkce.status).toBe(302);
+    const missingPkceError = new URL(missingPkce.headers.get("Location") ?? "");
+    expect(missingPkceError.origin + missingPkceError.pathname).toBe(redirectUri);
+    expect(missingPkceError.searchParams.get("error")).toBe("invalid_request");
 
     const codeVerifier = "codex-public-pkce-verifier";
     const codeChallenge = await sha256Base64UrlForTest(codeVerifier);
@@ -5135,7 +5150,8 @@ describe("SmartThings Rules Copilot Worker", () => {
       token_endpoint: "http://localhost/oauth/token",
       registration_endpoint: "http://localhost/oauth/register",
       scopes_supported: ["smartthings:rules"],
-      code_challenge_methods_supported: ["S256"]
+      code_challenge_methods_supported: ["S256"],
+      client_id_metadata_document_supported: true
     });
 
     const response = await workerRequest(
