@@ -109,10 +109,15 @@ GET은 동의 화면을 표시하거나 PAT 설정으로 이동한다. cookie/PA
 - `client_secret_basic` 또는 `client_secret_post`로 인증하는 confidential client는
   GPT Actions 호환을 위해 PKCE를 생략할 수 있다.
 - confidential client의 secret과 exact redirect URI는 code 교환 시 다시 검증한다.
-- access token은 1시간, refresh token/grant와 dynamic client는 최대 30일이다.
+- access token은 1시간이고 refresh token과 grant는 최대 30일이다.
+- MCP의 동적 클라이언트 등록(DCR)은 최초 1년이다. 승인 코드나 refresh token 교환에
+  성공하면 등록 만료 시각을 그때부터 1년으로 연장한다.
+- HTTPS Client ID Metadata Document(CIMD)를 지원하고 DCR도 계속 제공한다.
+- 고정 GPT Actions 클라이언트는 만료일 없이 사전 등록한다. Worker는 등록과 배포 설정의
+  일치 여부를 확인하고 사용자 승인 요청에서 등록을 수정하지 않는다.
 - 기존 자체 OAuth 형식과의 dual-stack 또는 token bridge는 두지 않는다.
 
-Claude는 dynamic client registration과 S256을 사용한다. GPT Actions는 고정
+Claude 같은 MCP 클라이언트는 CIMD 또는 DCR과 S256을 사용할 수 있다. GPT Actions는 고정
 confidential client를 사용한다. 이 차이는 OAuth adapter 경계에만 있고 MCP/Action 도구
 계약이나 SmartThings write 안전 동작은 동일하다.
 

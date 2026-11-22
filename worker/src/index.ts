@@ -13,6 +13,7 @@ import { randomId } from "./crypto";
 import { actionApp } from "./action";
 import { handleMcpRequest } from "./mcp";
 import { oauthApp, SMARTTHINGS_RULES_SCOPE } from "./oauth";
+import { DYNAMIC_CLIENT_REGISTRATION_TTL_SECONDS } from "./oauth-config";
 import { readReconnectTicket } from "./reconnect-ticket-store";
 import {
   getRuleReference,
@@ -315,14 +316,11 @@ export const oauthProviderOptions = {
   scopesSupported: [SMARTTHINGS_RULES_SCOPE],
   accessTokenTTL: 60 * 60,
   refreshTokenTTL: 30 * 24 * 60 * 60,
-  clientRegistrationTTL: 30 * 24 * 60 * 60,
+  clientRegistrationTTL: DYNAMIC_CLIENT_REGISTRATION_TTL_SECONDS,
   allowImplicitFlow: false,
-  // The provider treats a missing PKCE challenge as plain. The application
-  // rejects explicit plain PKCE and permits omission only for confidential
-  // clients that authenticate at the token endpoint.
-  allowPlainPKCE: true,
+  allowPlainPKCE: false,
   allowTokenExchangeGrant: false,
-  clientIdMetadataDocumentEnabled: false,
+  clientIdMetadataDocumentEnabled: true,
   disallowPublicClientRegistration: false,
   resourceMetadata: {
     scopes_supported: [SMARTTHINGS_RULES_SCOPE],
@@ -347,14 +345,6 @@ export const worker: ExportedHandler<Env> = {
     }
     const guardedRequest = guarded.request;
 
-    const gptClientReconciled = await reconcileConfiguredGptOAuthClient(
-      guardedRequest,
-      env
-    );
-    if (gptClientReconciled) {
-      return withSensitiveResponseHeaders(guardedRequest, gptClientReconciled);
-    }
-
     if (
       hasBrowserConnection(guardedRequest) &&
       isProtectedApiPath(new URL(guardedRequest.url).pathname)
@@ -362,9 +352,13 @@ export const worker: ExportedHandler<Env> = {
       const response = await app.fetch(guardedRequest, env, ctx);
       return withSensitiveResponseHeaders(guardedRequest, response);
     }
-    const response = await oauthProvider.fetch(guardedRequest, env, ctx);
-    const normalized = await normalizeOAuthResponse(guardedRequest, response);
-    return withSensitiveResponseHeaders(guardedRequest, normalized);
+    const isTokenExchange =
+      guardedRequest.method === "POST" &&
+      new URL(guardedRequest.url).pathname === oauthProviderOptions.tokenEndpoint;
+    const response = isTokenExchange
+      ? await exchangeOAuthToken(guardedRequest, env, ctx)
+      : await oauthProvider.fetch(guardedRequest, env, ctx);
+    return withSensitiveResponseHeaders(guardedRequest, response);
   }
 };
 
@@ -394,119 +388,43 @@ function withSensitiveResponseHeaders(request: Request, response: Response): Res
   });
 }
 
-async function reconcileConfiguredGptOAuthClient(
+async function exchangeOAuthToken(
   request: Request,
-  env: Env
-): Promise<Response | null> {
-  const url = new URL(request.url);
-  if (request.method !== "GET" || url.pathname !== "/oauth/authorize") {
-    return null;
-  }
-
-  const clientId = env.GPT_ACTIONS_CLIENT_ID?.trim();
-  const redirectUris = configuredGptRedirectUris(env.GPT_ACTIONS_REDIRECT_URIS);
-  const requestedRedirectUri = url.searchParams.get("redirect_uri");
-  if (
-    !clientId ||
-    url.searchParams.get("client_id") !== clientId ||
-    !requestedRedirectUri ||
-    !redirectUris.includes(requestedRedirectUri)
-  ) {
-    return null;
-  }
-
-  const oauth = getOAuthApi(oauthProviderOptions, env);
-  const client = await oauth.lookupClient(clientId);
-  if (!client || sameStringSet(client.redirectUris, redirectUris)) {
-    return null;
-  }
-
-  // GPT Builder can replace its Action callback identifier after OAuth
-  // credentials are saved. Keep the confidential client secret and metadata,
-  // and reconcile only the exact deploy-controlled OpenAI callback allowlist.
-  await oauth.updateClient(clientId, { redirectUris });
-
-  // OAuth KV may still return the previous client value inside the request that
-  // performed the write. Start a fresh request so the first real user does not
-  // see a transient redirect_uri validation failure.
-  return new Response(null, {
-    status: 302,
-    headers: {
-      "Cache-Control": "no-store",
-      Location: request.url
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
+  let authenticatedClientId: string | undefined;
+  // Read the client identity from the provider once the grant and client are validated.
+  const provider = new OAuthProvider<Env>({
+    ...oauthProviderOptions,
+    tokenExchangeCallback(options) {
+      const result = tokenPropsForExchange(options);
+      if (options.grantType === "authorization_code" || options.grantType === "refresh_token") {
+        authenticatedClientId = options.clientId;
+      }
+      return result;
     }
   });
-}
-
-function configuredGptRedirectUris(value: string | undefined): string[] {
-  if (!value) {
-    return [];
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 2) {
-    return [];
-  }
-
-  const redirectUris = [...new Set(parsed)];
+  const response = await provider.fetch(request, env, ctx);
   if (
-    redirectUris.length !== parsed.length ||
-    redirectUris.some((redirectUri) => !isAllowedGptRedirectUri(redirectUri))
+    response.ok &&
+    authenticatedClientId &&
+    authenticatedClientId !== env.GPT_ACTIONS_CLIENT_ID?.trim() &&
+    !authenticatedClientId.startsWith("https://")
   ) {
-    return [];
-  }
-  return redirectUris as string[];
-}
-
-function isAllowedGptRedirectUri(value: unknown): value is string {
-  if (typeof value !== "string") {
-    return false;
-  }
-
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      (url.hostname === "chat.openai.com" || url.hostname === "chatgpt.com") &&
-      url.port === "" &&
-      url.username === "" &&
-      url.password === "" &&
-      url.search === "" &&
-      url.hash === "" &&
-      /^\/aip\/g-[A-Za-z0-9_-]+\/oauth\/callback$/u.test(url.pathname)
+    const oauth = getOAuthApi(oauthProviderOptions, env);
+    ctx.waitUntil(
+      oauth.updateClient(authenticatedClientId, {}).catch(() => {
+        console.warn("OAuth dynamic client registration renewal failed.");
+      })
     );
-  } catch {
-    return false;
   }
+
+  return normalizeOAuthTokenType(response);
 }
 
-function sameStringSet(left: string[], right: string[]): boolean {
-  return left.length === right.length && right.every((value) => left.includes(value));
-}
-
-async function normalizeOAuthResponse(
-  request: Request,
-  response: Response
-): Promise<Response> {
-  const tokenResponse = await normalizeOAuthTokenType(request, response);
-  return normalizeOAuthMetadata(request, tokenResponse);
-}
-
-async function normalizeOAuthTokenType(
-  request: Request,
-  response: Response
-): Promise<Response> {
-  if (
-    request.method !== "POST" ||
-    new URL(request.url).pathname !== "/oauth/token" ||
-    !response.ok ||
-    !response.headers.get("Content-Type")?.includes("application/json")
-  ) {
+async function normalizeOAuthTokenType(response: Response): Promise<Response> {
+  if (!response.ok || !response.headers.get("Content-Type")?.includes("application/json")) {
     return response;
   }
 
@@ -530,44 +448,6 @@ async function normalizeOAuthTokenType(
     JSON.stringify({
       ...body,
       token_type: "Bearer"
-    }),
-    {
-      status: response.status,
-      statusText: response.statusText,
-      headers
-    }
-  );
-}
-
-async function normalizeOAuthMetadata(
-  request: Request,
-  response: Response
-): Promise<Response> {
-  if (
-    request.method !== "GET" ||
-    new URL(request.url).pathname !== "/.well-known/oauth-authorization-server" ||
-    !response.ok ||
-    !response.headers.get("Content-Type")?.includes("application/json")
-  ) {
-    return response;
-  }
-
-  let body: unknown;
-  try {
-    body = await response.clone().json();
-  } catch {
-    return response;
-  }
-  if (typeof body !== "object" || body === null) {
-    return response;
-  }
-
-  const headers = new Headers(response.headers);
-  headers.delete("Content-Length");
-  return new Response(
-    JSON.stringify({
-      ...body,
-      code_challenge_methods_supported: ["S256"]
     }),
     {
       status: response.status,

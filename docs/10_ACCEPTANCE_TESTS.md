@@ -38,21 +38,23 @@ deployment version과 환경별 live 검증 원문은 공개 범위에 포함하
 - authorization server/protected resource metadata가 HTTPS endpoint를 광고한다.
 - scope는 `smartthings:rules`만 지원한다.
 - 지원 PKCE 방식은 S256만 광고한다.
+- authorization server metadata는 CIMD 지원과 DCR endpoint를 광고한다.
 
 ### Public client
 
 - S256 authorization code flow는 consent로 진행한다.
-- PKCE 생략과 explicit `plain`은 400으로 거부한다.
+- PKCE 생략과 explicit `plain`은 `invalid_request`로 거부한다. Provider가 callback을
+  검증한 경우 해당 주소로 OAuth 오류를 보내고, 검증하지 못한 경우 HTTP 400을 반환한다.
 
 ### Confidential client
 
 - `client_secret_basic|client_secret_post` client는 PKCE 없이 consent/code 교환이 가능하다.
 - token endpoint에서 secret과 exact redirect URI를 검증한다.
 - explicit `plain`은 confidential client에도 허용하지 않는다.
-- configured GPT client와 deploy-configured exact OpenAI callback으로 들어온 authorize는
-  공식 Provider helper로 redirect allowlist를 동기화한 뒤 consent로 진행한다.
-- 동기화 뒤 기존 client secret으로 code 교환이 성공하고, 이전 callback은 거부한다.
-- 다른 client나 deploy allowlist 밖의 callback 요청은 client 등록을 변경하지 않는다.
+- 사전에 만료일 없이 등록한 GPT client와 exact callback은 승인 후 code를 교환할 수 있다.
+- 설정된 GPT client의 누락, 인증 방식 불일치 또는 등록된 callback 불일치는
+  `CONFIGURATION_ERROR`로 처리한다. allowlist 밖의 callback은 거부한다.
+- 승인 시작·재개·완료 및 token 교환은 고정 GPT client의 등록이나 만료일을 변경하지 않는다.
 
 ### Consent
 
@@ -73,7 +75,9 @@ deployment version과 환경별 live 검증 원문은 공개 범위에 포함하
 
 ### Token과 reset
 
-- access token은 3600초, refresh/grant와 dynamic client는 최대 30일이다.
+- access token은 3600초이고 refresh token과 grant는 최대 30일이다.
+- 동적 등록 만료는 최초 1년이며, 승인 코드나 refresh token 교환이 성공한 경우에만
+  동일한 클라이언트의 등록을 1년 연장한다.
 - refresh token 교환 뒤 새 access token으로 API/MCP가 동작한다.
 - PAT 재등록과 SmartThings 연결 해제는 기존 OAuth token을 유지한다.
 - session reset은 ConnectionGate를 먼저 inactive 처리하고 기존 Bearer token을
