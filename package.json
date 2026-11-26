@@ -19,6 +19,6 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260710.1",
-    "concurrently": "^9.2.4"
+    "concurrently": "^9.2.5"
   }
 }
