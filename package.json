@@ -15,7 +15,7 @@
     "test": "npm run test -w worker && npm run test -w frontend",
     "instructions:gpt": "npm run instructions:gpt -w worker --silent",
     "check": "npm run typecheck && npm test && npm run build",
-    "deploy:production": "npm run check && npm run deploy:production -w worker"
+    "deploy:production": "node scripts/check-production-sync.mjs && npm run check && npm run deploy:production -w worker"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260710.1",
